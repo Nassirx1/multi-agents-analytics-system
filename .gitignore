@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+analytics_run_*.log
+figure_*.png
+analytics_report*.pdf
+analytics_report*.pptx
+analytics_report*.txt
+*.csv
+*.xlsx
