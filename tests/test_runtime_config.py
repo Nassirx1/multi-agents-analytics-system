@@ -1,10 +1,15 @@
+import logging
+import os
+import tempfile
 import unittest
 
+from analytics_workflow.clients import setup_logging
 from analytics_workflow.runtime_config import (
     DEFAULT_MODEL,
     build_runtime_config,
     mask_secret,
     redact_secrets,
+    register_runtime_config,
 )
 
 
@@ -41,6 +46,55 @@ class RuntimeConfigTests(unittest.TestCase):
             build_runtime_config("", "brave-secret")
         with self.assertRaises(ValueError):
             build_runtime_config("openrouter-secret", "")
+
+
+class RedactingLogFilterTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        register_runtime_config(None)
+
+    def test_log_file_masks_registered_secrets(self) -> None:
+        config = build_runtime_config("openrouter-supersecret", "brave-supersecret")
+        register_runtime_config(config)
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.chdir(tmpdir)
+            try:
+                setup_logging(run_id="redact_test")
+                logging.getLogger("RedactTest").error(
+                    "leaked openrouter-supersecret in message"
+                )
+                for handler in logging.getLogger().handlers:
+                    handler.flush()
+                with open(
+                    os.path.join(tmpdir, "analytics_run_redact_test.log"),
+                    encoding="utf-8",
+                ) as fh:
+                    contents = fh.read()
+            finally:
+                logging.shutdown()
+                os.chdir(original_cwd)
+        self.assertNotIn("openrouter-supersecret", contents)
+        self.assertIn(mask_secret("openrouter-supersecret"), contents)
+
+    def test_filter_is_noop_when_no_config_registered(self) -> None:
+        register_runtime_config(None)
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.chdir(tmpdir)
+            try:
+                setup_logging(run_id="noop_test")
+                logging.getLogger("RedactTest").error("plain message no secret")
+                for handler in logging.getLogger().handlers:
+                    handler.flush()
+                with open(
+                    os.path.join(tmpdir, "analytics_run_noop_test.log"),
+                    encoding="utf-8",
+                ) as fh:
+                    contents = fh.read()
+            finally:
+                logging.shutdown()
+                os.chdir(original_cwd)
+        self.assertIn("plain message no secret", contents)
 
 
 if __name__ == "__main__":

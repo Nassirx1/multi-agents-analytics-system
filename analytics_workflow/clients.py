@@ -10,6 +10,24 @@ from typing import Any
 
 import requests
 
+from .runtime_config import get_active_runtime_config, redact_secrets
+
+
+class _SecretRedactingFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        config = get_active_runtime_config()
+        if config is None:
+            return True
+        try:
+            rendered = record.getMessage()
+        except Exception:
+            return True
+        redacted = redact_secrets(rendered, config)
+        if redacted != rendered:
+            record.msg = redacted
+            record.args = ()
+        return True
+
 
 def setup_logging(run_id: str | None = None) -> logging.Logger:
     run_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -21,6 +39,9 @@ def setup_logging(run_id: str | None = None) -> logging.Logger:
         handlers=[logging.FileHandler(log_filename), logging.StreamHandler()],
         force=True,
     )
+    redaction_filter = _SecretRedactingFilter()
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(redaction_filter)
     logger = logging.getLogger("SYSTEM")
     logger.info("Run ID: %s | Log: %s", run_id, log_filename)
     return logger
@@ -100,6 +121,8 @@ class OpenRouterClient:
         self.cost_tracker = CostTracker(model=model)
         self._logger = logging.getLogger("OpenRouterClient")
 
+    _MAX_TOKENS_LADDER = (4000, 6000, 8000)
+
     def chat_completion(self, system_prompt: str, user_prompt: str, max_retries: int = 3) -> str:
         payload = {
             "model": self.model,
@@ -108,8 +131,10 @@ class OpenRouterClient:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0.7,
-            "max_tokens": 4000,
+            "max_tokens": self._MAX_TOKENS_LADDER[0],
         }
+        last_empty_reason = ""
+        ladder_index = 0
         for attempt in range(max_retries):
             try:
                 response = self.session.post(
@@ -124,15 +149,60 @@ class OpenRouterClient:
                         usage.get("prompt_tokens", 0),
                         usage.get("completion_tokens", 0),
                     )
-                    return data["choices"][0]["message"]["content"].strip()
-                self._logger.error("API error %s: %s", response.status_code, response.text[:200])
+                    content, empty_reason = self._extract_message_content(data)
+                    if content:
+                        return content
+                    last_empty_reason = empty_reason
+                    self._logger.error(
+                        "OpenRouter returned empty content on attempt %s (model=%s): %s",
+                        attempt + 1,
+                        self.model,
+                        empty_reason,
+                    )
+                    if empty_reason.startswith("finish_reason=length") and ladder_index < len(self._MAX_TOKENS_LADDER) - 1:
+                        ladder_index += 1
+                        payload["max_tokens"] = self._MAX_TOKENS_LADDER[ladder_index]
+                else:
+                    self._logger.error("API error %s: %s", response.status_code, response.text[:200])
             except Exception as exc:
                 self._logger.error("OpenRouter request failed on attempt %s: %s", attempt + 1, exc)
                 if attempt == max_retries - 1:
                     self.cost_tracker.failed_calls += 1
                     raise
             time.sleep(min(2**attempt, 8))
-        raise RuntimeError("OpenRouter request failed after retries.")
+        self.cost_tracker.failed_calls += 1
+        detail = f" Last reason: {last_empty_reason}." if last_empty_reason else ""
+        raise RuntimeError(f"OpenRouter request failed after {max_retries} retries.{detail}")
+
+    @staticmethod
+    def _extract_message_content(data: dict[str, Any]) -> tuple[str, str]:
+        if not isinstance(data, dict):
+            return "", f"non-dict response body: {type(data).__name__}"
+        if data.get("error"):
+            err = data["error"]
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            return "", f"upstream error: {msg}"
+        choices = data.get("choices") or []
+        if not choices:
+            return "", "response had no choices"
+        first = choices[0] or {}
+        message = first.get("message") or {}
+        content = message.get("content")
+        if isinstance(content, list):
+            parts = [
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict) and part.get("type") in (None, "text", "output_text")
+            ]
+            content = "".join(parts)
+        if not isinstance(content, str) or not content.strip():
+            finish = first.get("finish_reason") or first.get("native_finish_reason") or "unknown"
+            refusal = message.get("refusal")
+            reason = f"finish_reason={finish}"
+            if refusal:
+                reason += f", refusal={str(refusal)[:120]}"
+            return "", reason
+        return content.strip(), ""
 
     def chat_completion_json(self, system_prompt: str, user_prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         prompt = (
@@ -141,12 +211,37 @@ class OpenRouterClient:
             f"{json.dumps(schema, indent=2)}"
         )
         raw = self.chat_completion(system_prompt, prompt)
-        raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
-        raw = re.sub(r"\s*```$", "", raw.strip())
+        cleaned = self._strip_code_fences(raw)
         try:
-            return json.loads(raw)
+            return json.loads(cleaned)
         except json.JSONDecodeError as exc:
-            return {"raw_text": raw, "parse_error": str(exc)}
+            self._logger.error(
+                "chat_completion_json failed to parse JSON (model=%s): %s | raw=%s",
+                self.model,
+                exc,
+                cleaned[:200],
+            )
+            sharpened_prompt = (
+                f"{prompt}\n\n"
+                "Your previous response was not valid JSON. Reply with ONLY a JSON object "
+                "matching the schema. No fences, no prose."
+            )
+            retry_raw = self.chat_completion(system_prompt, sharpened_prompt)
+            retry_cleaned = self._strip_code_fences(retry_raw)
+            try:
+                return json.loads(retry_cleaned)
+            except json.JSONDecodeError as retry_exc:
+                self._logger.error(
+                    "chat_completion_json retry still invalid (model=%s): %s",
+                    self.model,
+                    retry_exc,
+                )
+                return {"raw_text": retry_cleaned, "parse_error": str(retry_exc)}
+
+    @staticmethod
+    def _strip_code_fences(raw: str) -> str:
+        stripped = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+        return re.sub(r"\s*```$", "", stripped.strip())
 
 
 class BraveSearchClient:

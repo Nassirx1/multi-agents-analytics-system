@@ -29,6 +29,10 @@ class SlideDeckTests(unittest.TestCase):
             workflow_state = {
                 "saved_figures": figure_paths,
                 "analysis_results": {
+                    "analysis_summary": {
+                        "average_return_pct": 3.1,
+                        "peak_volume": "2.7M shares",
+                    },
                     "figure_captions": {
                         figure_paths[0]: "Sales trend improved in the latest period.",
                         figure_paths[1]: "Volume spikes align with price volatility.",
@@ -65,7 +69,7 @@ class SlideDeckTests(unittest.TestCase):
             generate_slide_deck(workflow_state, str(output_path))
 
             presentation = Presentation(str(output_path))
-            self.assertEqual(len(presentation.slides), 7)
+            self.assertEqual(len(presentation.slides), 8)
 
             picture_slides = 0
             all_text = []
@@ -76,8 +80,14 @@ class SlideDeckTests(unittest.TestCase):
                     if hasattr(shape, "text"):
                         all_text.append(shape.text)
 
+            full_text = "\n".join(all_text)
             self.assertEqual(picture_slides, 4)
-            self.assertNotIn("Insight Visual / Evidence", "\n".join(all_text))
+            self.assertNotIn("Insight Visual / Evidence", full_text)
+            self.assertIn("Technical Analysis Findings", full_text)
+            self.assertIn("Average Return Pct: 3.1", full_text)
+            self.assertIn("Peak Volume: 2.7M shares", full_text)
+            self.assertEqual(full_text.count("Sales trend improved in the latest period."), 1)
+            self.assertEqual(full_text.count("Volume spikes align with price volatility."), 1)
 
 
 if __name__ == "__main__":

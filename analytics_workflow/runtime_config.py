@@ -81,6 +81,18 @@ def redact_secrets(text: str, config: RuntimeConfig) -> str:
     return redacted
 
 
+_ACTIVE_CONFIG: RuntimeConfig | None = None
+
+
+def register_runtime_config(config: RuntimeConfig | None) -> None:
+    global _ACTIVE_CONFIG
+    _ACTIVE_CONFIG = config
+
+
+def get_active_runtime_config() -> RuntimeConfig | None:
+    return _ACTIVE_CONFIG
+
+
 def _prompt_required(prompt_fn: PromptFn, message: str) -> str:
     while True:
         value = prompt_fn(message).strip()

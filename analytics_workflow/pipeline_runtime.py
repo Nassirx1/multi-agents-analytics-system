@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -52,6 +51,7 @@ from .reporting import (
     generate_slide_deck,
 )
 from .runtime_config import RuntimeConfig
+from .serialization import json_dumps_safe, make_json_safe
 
 warnings.filterwarnings("ignore")
 plt.style.use("seaborn-v0_8")
@@ -191,7 +191,17 @@ class MultiAgentOrchestrator:
         last_execution_error = "No execution attempt was completed."
         for iteration in range(max_iterations):
             self._set_step(4, f"running (iteration {iteration + 1})")
-            current_code = self.agents["coder"].execute(analysis_plan, self.workflow_state["csv_data"], iteration + 1)
+            try:
+                current_code = self.agents["coder"].execute(analysis_plan, self.workflow_state["csv_data"], iteration + 1)
+            except Exception as exc:
+                last_execution_error = str(exc)
+                self.agents["coder"].context["review_feedback"] = (
+                    "The previous response was not a valid analysis script. "
+                    "Return executable Python only with analysis_summary, business_findings, and figure_captions.\n"
+                    f"Error: {exc}"
+                )
+                self._set_step(4, "revise")
+                continue
             self._set_step(4, "done")
 
             self._set_step(5, f"running (iteration {iteration + 1})")
@@ -203,14 +213,46 @@ class MultiAgentOrchestrator:
                 best_runnable_code = current_code
                 self.workflow_state["analysis_results"] = execution
                 self.workflow_state["saved_figures"] = execution.get("figures_generated", [])
+                self.workflow_state["analysis_artifact_warnings"] = artifact_issues
 
-            if execution.get("execution_status") == "success" and not artifact_issues:
-                approved_code = current_code
-                self._set_step(5, "done")
+                if not artifact_issues:
+                    approved_code = current_code
+                    self._set_step(5, "done")
+                    break
+
+                review = self.agents["reviewer"].execute(
+                    current_code,
+                    analysis_plan,
+                    iteration + 1,
+                    execution=execution,
+                    artifact_issues=artifact_issues,
+                )
+                self.workflow_state["agent_outputs"][f"reviewer_iter_{iteration + 1}"] = review
+                decision = review.get("decision", "").upper()
+                review_malformed = decision not in {"APPROVE", "REVISE", "REJECT"}
+                if review_malformed:
+                    self._logger.warning(
+                        "Reviewer returned malformed review (decision=%r, parse_error=%r). Treating as warning-only.",
+                        review.get("decision"),
+                        review.get("parse_error"),
+                    )
+                self.agents["coder"].context["review_feedback"] = json_dumps_safe(
+                    {
+                        "execution": execution,
+                        "artifact_issues": artifact_issues,
+                        "review": review,
+                    },
+                    indent=2,
+                )
+                last_execution_error = " ; ".join(artifact_issues)
+                if iteration < max_iterations - 1:
+                    self._set_step(5, "revise")
+                    continue
+                self._set_step(5, "done (best effort)")
                 break
 
             if execution.get("execution_status") != "success":
-                self.agents["coder"].context["review_feedback"] = json.dumps(
+                feedback_payload = json_dumps_safe(
                     {
                         "execution": execution,
                         "artifact_issues": artifact_issues,
@@ -219,35 +261,43 @@ class MultiAgentOrchestrator:
                             "summary": "The generated output was not runnable Python. Fix syntax and return executable code only.",
                         },
                     },
-                    default=str,
+                    indent=2,
                 )
+                missing_module = execution.get("missing_module")
+                if missing_module:
+                    dependency_review = {
+                        "decision": "REVISE",
+                        "critical_issues": [
+                            f"Runtime failed because Python could not import '{missing_module}'."
+                        ],
+                        "improvements": [
+                            (
+                                f"If '{missing_module}' is genuinely needed, add a guarded runtime bootstrap using "
+                                "importlib, subprocess, and sys so the script installs the package with "
+                                f"`sys.executable -m pip install {missing_module}` before importing it."
+                            ),
+                            (
+                                f"If the package was only forgotten in the import section, add the explicit "
+                                f"`import {missing_module}` or equivalent package import and keep the script runnable."
+                            ),
+                        ],
+                        "summary": (
+                            f"Revise the analysis code so missing dependency '{missing_module}' is handled automatically "
+                            "instead of crashing the run."
+                        ),
+                    }
+                    self.workflow_state["agent_outputs"][f"reviewer_iter_{iteration + 1}"] = dependency_review
+                    feedback_payload = json_dumps_safe(
+                        {
+                            "execution": execution,
+                            "artifact_issues": artifact_issues,
+                            "review": dependency_review,
+                        },
+                        indent=2,
+                    )
+                self.agents["coder"].context["review_feedback"] = feedback_payload
                 self._set_step(5, "revise")
                 continue
-
-            review = self.agents["reviewer"].execute(
-                current_code,
-                analysis_plan,
-                iteration + 1,
-                execution=execution,
-                artifact_issues=artifact_issues,
-            )
-            self.workflow_state["agent_outputs"][f"reviewer_iter_{iteration + 1}"] = review
-            decision = review.get("decision", "").upper()
-            if execution.get("execution_status") == "success" and decision == "APPROVE":
-                approved_code = current_code
-                self.workflow_state["analysis_artifact_warnings"] = artifact_issues
-                self._set_step(5, "done")
-                break
-            feedback = json.dumps(
-                {
-                    "execution": execution,
-                    "artifact_issues": artifact_issues,
-                    "review": review,
-                },
-                default=str,
-            )
-            self.agents["coder"].context["review_feedback"] = feedback
-            self._set_step(5, "revise")
         if approved_code or best_runnable_code:
             self._set_step(5, "done (best effort)")
             return approved_code or best_runnable_code
@@ -265,8 +315,8 @@ class MultiAgentOrchestrator:
 
         figures = execution.get("figures_generated", []) or []
         analysis_summary = execution.get("analysis_summary", {}) or {}
-        business_findings = execution.get("business_findings", []) or []
         figure_captions = execution.get("figure_captions", {}) or {}
+        business_findings = execution.get("business_findings", []) or []
 
         if len(figures) < 3:
             issues.append("Analysis produced fewer than 3 saved figures, so visual analysis is too thin.")
@@ -274,9 +324,8 @@ class MultiAgentOrchestrator:
             issues.append("analysis_summary is missing or too small to support business reporting.")
         elif not self._has_numeric_evidence(analysis_summary):
             issues.append("analysis_summary does not contain clear numeric evidence.")
-
-        if len(business_findings) < 2:
-            issues.append("business_findings is missing or too short for business interpretation.")
+        if not isinstance(business_findings, list) or len(business_findings) < 2:
+            issues.append("business_findings are missing or too small to support business reporting.")
 
         missing_captions = [figure for figure in figures if not _stringify(figure_captions.get(figure, "")).strip()]
         if missing_captions:
@@ -295,11 +344,58 @@ class MultiAgentOrchestrator:
             return any(self._has_numeric_evidence(item) for item in value)
         return False
 
+    def _normalize_business_findings(
+        self,
+        raw_business_findings: Any,
+        analysis_summary: Any,
+        figure_captions: Any,
+    ) -> list[str]:
+        findings: list[str] = []
+        seen: set[str] = set()
+
+        def add_finding(value: Any) -> None:
+            clean = _stringify(value).strip()
+            if not clean or clean in seen:
+                return
+            seen.add(clean)
+            findings.append(clean)
+
+        if isinstance(raw_business_findings, str):
+            add_finding(raw_business_findings)
+        elif isinstance(raw_business_findings, list):
+            for item in raw_business_findings:
+                add_finding(item)
+
+        if findings:
+            return findings
+
+        if isinstance(analysis_summary, dict):
+            for key, value in list(analysis_summary.items())[:4]:
+                add_finding(f"{str(key).replace('_', ' ').title()}: {_stringify(value)}")
+        if isinstance(figure_captions, dict):
+            for caption in list(figure_captions.values())[:3]:
+                add_finding(caption)
+        return findings
+
     def _execute_code(self, code: str) -> dict[str, Any]:
         original_pyplot_savefig = plt.savefig
         original_figure_savefig = Figure.savefig
         try:
-            exec_globals: dict[str, Any] = {"pd": pd, "np": np, "plt": plt, "sns": sns, "__builtins__": __builtins__}
+            exec_globals: dict[str, Any] = {
+                "pd": pd,
+                "np": np,
+                "plt": plt,
+                "sns": sns,
+                "nan": np.nan,
+                "NaN": np.nan,
+                "inf": np.inf,
+                "Infinity": np.inf,
+                "null": None,
+                "NULL": None,
+                "true": True,
+                "false": False,
+                "__builtins__": __builtins__,
+            }
             run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             saved_figure_paths: list[str] = []
             figure_name_map: dict[str, str] = {}
@@ -365,19 +461,69 @@ class MultiAgentOrchestrator:
             if isinstance(raw_figure_captions, dict):
                 for key, value in raw_figure_captions.items():
                     mapped_key = figure_name_map.get(str(key), str(key))
-                    figure_captions[mapped_key] = value
+                    figure_captions[mapped_key] = make_json_safe(value)
+            analysis_summary = make_json_safe(exec_globals.get("analysis_summary", {}))
+            business_findings = self._normalize_business_findings(
+                make_json_safe(exec_globals.get("business_findings", [])),
+                analysis_summary,
+                figure_captions,
+            )
+            contract_issues = self._missing_analysis_contract_items(
+                analysis_summary,
+                business_findings,
+                figure_captions,
+            )
+            if contract_issues:
+                return {
+                    "execution_status": "failed",
+                    "error": (
+                        "Analysis script did not produce the required outputs: "
+                        + ", ".join(contract_issues)
+                    ),
+                    "traceback": "",
+                    "analysis_summary": analysis_summary,
+                    "business_findings": business_findings,
+                    "figure_captions": figure_captions,
+                    "figures_generated": figures,
+                }
             return {
                 "execution_status": "success",
                 "figures_generated": figures,
-                "analysis_summary": exec_globals.get("analysis_summary", {}),
-                "business_findings": exec_globals.get("business_findings", []),
+                "analysis_summary": analysis_summary,
+                "business_findings": business_findings,
                 "figure_captions": figure_captions,
+            }
+        except ModuleNotFoundError as exc:
+            missing = getattr(exc, "name", None)
+            if not missing:
+                match = re.search(r"No module named ['\"]([^'\"]+)['\"]", str(exc))
+                missing = match.group(1) if match else ""
+            return {
+                "execution_status": "failed",
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+                "missing_module": missing,
             }
         except Exception as exc:
             return {"execution_status": "failed", "error": str(exc), "traceback": traceback.format_exc()}
         finally:
             plt.savefig = original_pyplot_savefig
             Figure.savefig = original_figure_savefig
+
+    def _missing_analysis_contract_items(
+        self,
+        analysis_summary: Any,
+        business_findings: Any,
+        figure_captions: Any,
+    ) -> list[str]:
+        missing: list[str] = []
+        if not isinstance(analysis_summary, dict) or not analysis_summary:
+            missing.append("analysis_summary")
+        if not isinstance(business_findings, list) or not business_findings:
+            missing.append("business_findings")
+        if not isinstance(figure_captions, dict):
+            missing.append("figure_captions")
+        return missing
 
 
 def find_csv_files(workspace: Path) -> list[Path]:
@@ -436,6 +582,7 @@ def run_terminal_workflow(config: RuntimeConfig, workspace: Path | None = None) 
     print("Analytics workflow launcher")
     print("===========================")
     print(f"Workspace: {root}")
+    print(f"Runtime module: {Path(__file__).resolve()}")
     csv_files = prompt_dataset_paths(root)
     print("Datasets:")
     for path in csv_files:

@@ -48,6 +48,8 @@ If you prefer not to activate the virtual environment:
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+The requirements include the core analytics stack used by generated code, including `scipy` and `statsmodels` for richer statistical and time-series analysis when needed.
+
 ## Running the workflow
 
 Windows one-click runner:
