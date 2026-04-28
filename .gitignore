@@ -11,5 +11,7 @@ analytics_report*.pptx
 analytics_report*.txt
 !analytics_report.pdf
 !analytics_report.pptx
+tests/
+run_workflow.cmd
 *.csv
 *.xlsx

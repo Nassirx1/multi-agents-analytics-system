@@ -52,13 +52,7 @@ The requirements include the core analytics stack used by generated code, includ
 
 ## Running the workflow
 
-Windows one-click runner:
-
-```powershell
-run_workflow.cmd
-```
-
-Direct Python entrypoint:
+Use the Python entrypoint:
 
 ```powershell
 python -m analytics_workflow
@@ -84,21 +78,11 @@ Typical run outputs include:
 
 Generated outputs are intentionally ignored by Git and are not part of the initial published repository surface.
 
-## Tests
-
-Run the unit test suite with:
-
-```powershell
-.venv\Scripts\python.exe -m unittest discover -s tests -q
-```
-
 ## Repository contents
 
 The repository intentionally focuses on the application surface:
 
 - `analytics_workflow/` for runtime, orchestration, agents, clients, and reporting
-- `tests/` for regression coverage
-- `run_workflow.cmd` for Windows launching
 - `AGENTS.md` and `.codex/skills/` for project-level agent guidance and reusable support workflows
 
 Local datasets, generated reports, figures, logs, and virtual environment files are excluded from source control by default.
