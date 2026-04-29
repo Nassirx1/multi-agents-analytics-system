@@ -30,6 +30,8 @@ Each run prompts in the terminal for:
 
 If the model override is left blank, the workflow uses `deepseek/deepseek-v3.2`.
 
+The workflow keeps its existing OpenRouter Chat Completions integration for compatibility, while defaulting to DeepSeek v3.2 on OpenRouter.
+
 API keys are used in memory only for the current process. They are not written to `.env`, config files, or repository state.
 
 ## Installation

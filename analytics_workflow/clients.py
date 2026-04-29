@@ -59,6 +59,7 @@ class CostTracker:
     failed_calls: int = 0
     cost_per_1k: dict[str, dict[str, float]] = field(
         default_factory=lambda: {
+            "openai/gpt-5.5": {"prompt": 0.005, "completion": 0.03},
             "deepseek/deepseek-v3.2": {"prompt": 0.00027, "completion": 0.0011},
             "openai/gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006},
             "default": {"prompt": 0.001, "completion": 0.002},

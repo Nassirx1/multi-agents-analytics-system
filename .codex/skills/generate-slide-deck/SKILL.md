@@ -5,6 +5,12 @@ Use this skill when generating, editing, or visually polishing the final PPTX de
 ## Goal
 Produce a concise, executive-ready slide deck that summarizes the complete workflow with consulting-style clarity.
 
+## Use The User Description
+- Treat the user's dataset/business description as the deck objective and audience context.
+- Use it to shape the title/context slide, problem/objective slide, analysis storyline, and final recommendation.
+- Keep the wording business-facing and specific to the user's stated goal.
+- If the data cannot support part of the user's described goal, include that as a limitation or next-step note rather than implying unsupported evidence.
+
 ## Design Standard
 - professional, practical, simple, concise, visually clean
 - suitable for an executive audience

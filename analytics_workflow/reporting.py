@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from PIL import Image as PILImage
+except ImportError:
+    PILImage = None
+
+try:
     from reportlab.lib import colors as rl_colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -63,6 +68,33 @@ def _add_pdf_bullets(story: list[Any], items: list[str], style: Any) -> None:
         if clean:
             story.append(Paragraph(_safe_paragraph(f"- {clean}"), style))
             story.append(Spacer(1, 0.05 * inch))
+
+
+def _format_objective_coverage(workflow_state: dict[str, Any]) -> list[str]:
+    objective = workflow_state.get("workflow_objective", {}) or {}
+    analysis_summary = workflow_state.get("analysis_results", {}).get("analysis_summary", {}) or {}
+    decision = workflow_state.get("agent_outputs", {}).get("decision_maker", {}) or {}
+    items: list[str] = []
+    raw_description = _stringify(objective.get("raw_description", ""))
+    decision_question = _stringify(objective.get("decision_question", ""))
+    if raw_description:
+        items.append(f"Objective: {raw_description}")
+    elif decision_question:
+        items.append(f"Objective: {decision_question}")
+    user_goal_alignment = ""
+    if isinstance(analysis_summary, dict):
+        user_goal_alignment = _stringify(analysis_summary.get("user_goal_alignment", ""))
+    if user_goal_alignment:
+        items.append(f"Analysis alignment: {user_goal_alignment}")
+    final_recommendation = _stringify(decision.get("final_recommendation", ""))
+    if final_recommendation:
+        items.append(f"Decision answer: {final_recommendation}")
+    limitations = objective.get("limitations", [])
+    if limitations:
+        items.append(f"Limitations: {'; '.join(_stringify(item) for item in limitations if _stringify(item))}")
+    if not items:
+        items.append("No user objective was provided; the workflow optimized for generally decision-useful findings.")
+    return items
 
 
 def _format_dataset_overview(data_understander: dict[str, Any]) -> str:
@@ -239,6 +271,36 @@ def _format_recommendations(recommendations: list[dict[str, Any]]) -> list[str]:
     return formatted
 
 
+def _format_priority_findings(business_translator: dict[str, Any]) -> list[str]:
+    formatted: list[str] = []
+    for item in business_translator.get("key_findings", [])[:5]:
+        finding = _stringify(item.get("finding", ""))
+        implication = _stringify(item.get("business_implication", ""))
+        priority = _stringify(item.get("priority", ""))
+        text = finding
+        if implication:
+            text += f" Business implication: {implication}."
+        if priority:
+            text += f" Priority: {priority}."
+        if text:
+            formatted.append(text)
+    return formatted
+
+
+def _fit_image_size(path: str, max_width: float, max_height: float) -> tuple[float, float]:
+    if PILImage is None:
+        return max_width, max_height
+    try:
+        with PILImage.open(path) as image:
+            width, height = image.size
+    except OSError:
+        return max_width, max_height
+    if not width or not height:
+        return max_width, max_height
+    ratio = min(max_width / width, max_height / height)
+    return width * ratio, height * ratio
+
+
 def _title_from_caption(caption: str, fallback_stem: str) -> str:
     text = (caption or "").strip()
     if not text:
@@ -324,6 +386,24 @@ def _ensure_analysis_findings_slide(
     return _renumber_slides(normalized_slides)
 
 
+def _ensure_objective_slide(slides: list[dict[str, Any]], workflow_state: dict[str, Any]) -> list[dict[str, Any]]:
+    coverage = _format_objective_coverage(workflow_state)
+    normalized = [dict(slide) for slide in slides]
+    if any("objective" in _stringify(slide.get("title", "")).lower() for slide in normalized):
+        return normalized
+    normalized.insert(
+        0,
+        {
+            "slide_number": 0,
+            "title": "Objective Coverage",
+            "main_message": coverage[0],
+            "details": coverage[1:5],
+            "visual_element": "",
+        },
+    )
+    return _renumber_slides(normalized)
+
+
 def _renumber_slides(slides: list[dict[str, Any]]) -> list[dict[str, Any]]:
     renumbered: list[dict[str, Any]] = []
     for index, slide in enumerate(slides, start=1):
@@ -348,6 +428,7 @@ def _preferred_output_path(output_path: str) -> str:
 def generate_pdf_report(workflow_state: dict[str, Any], output_path: str = "analytics_report.pdf") -> str:
     outputs = workflow_state.get("agent_outputs", {})
     analysis_results = workflow_state.get("analysis_results", {})
+    user_description = _stringify(workflow_state.get("user_data_description", "")).strip()
     resolved_output_path = _preferred_output_path(output_path)
     if REPORTLAB_AVAILABLE:
         styles = getSampleStyleSheet()
@@ -361,8 +442,13 @@ def generate_pdf_report(workflow_state: dict[str, Any], output_path: str = "anal
         story.append(Spacer(1, 0.2 * inch))
 
         _add_pdf_heading(story, "Executive Summary", styles["ReportHeading"])
+        if user_description:
+            _add_pdf_body(story, f"User context: {user_description}", styles["ReportBody"])
         _add_pdf_body(story, outputs.get("decision_maker", {}).get("executive_summary", ""), styles["ReportBody"])
         _add_pdf_body(story, outputs.get("decision_maker", {}).get("decision_context", ""), styles["ReportBody"])
+
+        _add_pdf_heading(story, "Objective Coverage", styles["ReportHeading"])
+        _add_pdf_bullets(story, _format_objective_coverage(workflow_state), styles["ReportBody"])
 
         _add_pdf_heading(story, "Dataset Overview / Data Understanding", styles["ReportHeading"])
         _add_pdf_body(story, outputs.get("data_understander", {}).get("executive_summary", ""), styles["ReportBody"])
@@ -388,7 +474,8 @@ def generate_pdf_report(workflow_state: dict[str, Any], output_path: str = "anal
             if os.path.exists(figure):
                 from reportlab.platypus import Image as RLImage
 
-                story.append(RLImage(figure, width=6.2 * inch, height=3.6 * inch))
+                image_width, image_height = _fit_image_size(figure, 6.2 * inch, 3.6 * inch)
+                story.append(RLImage(figure, width=image_width, height=image_height))
                 if caption:
                     story.append(Paragraph(_safe_paragraph(f"Figure note: {caption}"), styles["ReportCaption"]))
                 story.append(Spacer(1, 0.12 * inch))
@@ -396,16 +483,18 @@ def generate_pdf_report(workflow_state: dict[str, Any], output_path: str = "anal
         _add_pdf_heading(story, "Business Translation", styles["ReportHeading"])
         _add_pdf_body(story, outputs.get("business_translator", {}).get("executive_summary", ""), styles["ReportBody"])
         _add_pdf_body(story, outputs.get("business_translator", {}).get("business_narrative", ""), styles["ReportBody"])
+        _add_pdf_bullets(story, _format_priority_findings(outputs.get("business_translator", {})), styles["ReportBody"])
         _add_pdf_bullets(story, outputs.get("business_translator", {}).get("opportunities", []), styles["ReportBody"])
         _add_pdf_bullets(story, outputs.get("business_translator", {}).get("risks", []), styles["ReportBody"])
 
         _add_pdf_heading(story, "Decision Recommendations", styles["ReportHeading"])
         _add_pdf_body(story, outputs.get("decision_maker", {}).get("final_recommendation", ""), styles["ReportBody"])
         _add_pdf_bullets(story, _format_recommendations(outputs.get("decision_maker", {}).get("recommendations", [])), styles["ReportBody"])
+        _add_pdf_body(story, outputs.get("decision_maker", {}).get("conclusion", ""), styles["ReportBody"])
 
         _add_pdf_heading(story, "Appendix / Sources", styles["ReportHeading"])
         appendix_items = []
-        for index, source in enumerate(outputs.get("market_researcher", {}).get("sources_cited", []), start=1):
+        for index, source in sorted(_source_index_map(outputs.get("market_researcher", {})).items()):
             appendix_items.append(f"[{index}] {source.get('title', '')} - {source.get('url', '')}")
         if not appendix_items:
             appendix_items = ["No external sources were captured for this run."]
@@ -424,10 +513,14 @@ def generate_pdf_report(workflow_state: dict[str, Any], output_path: str = "anal
         datetime.now().strftime("%B %d, %Y"),
         "",
         "Executive Summary",
+        f"User context: {user_description}" if user_description else "",
         _stringify(outputs.get("decision_maker", {}).get("executive_summary", "")),
         "",
         "Decision Context",
         _stringify(outputs.get("decision_maker", {}).get("decision_context", "")),
+        "",
+        "Objective Coverage",
+        "\n".join(_format_objective_coverage(workflow_state)),
         "",
         "Dataset Overview",
         _format_dataset_overview(outputs.get("data_understander", {})),
@@ -442,9 +535,11 @@ def generate_pdf_report(workflow_state: dict[str, Any], output_path: str = "anal
         "",
         "Business Translation",
         _stringify(outputs.get("business_translator", {}).get("business_narrative", "")),
+        "\n".join(_format_priority_findings(outputs.get("business_translator", {}))),
         "",
         "Recommendations",
         "\n".join(_format_recommendations(outputs.get("decision_maker", {}).get("recommendations", []))),
+        _stringify(outputs.get("decision_maker", {}).get("conclusion", "")),
     ]
     Path(fallback_path).write_text("\n".join(lines), encoding="utf-8")
     return fallback_path
@@ -453,6 +548,7 @@ def generate_pdf_report(workflow_state: dict[str, Any], output_path: str = "anal
 def generate_slide_deck(workflow_state: dict[str, Any], output_path: str = "analytics_report.pptx") -> str:
     outputs = workflow_state.get("agent_outputs", {})
     analysis_results = workflow_state.get("analysis_results", {})
+    user_description = _stringify(workflow_state.get("user_data_description", "")).strip()
     resolved_output_path = _preferred_output_path(output_path)
     slide_plan = outputs.get("presentation_architect", {})
     slides = slide_plan.get("slides", [])
@@ -473,10 +569,14 @@ def generate_slide_deck(workflow_state: dict[str, Any], output_path: str = "anal
                 "visual_element": workflow_state.get("saved_figures", [""])[0] if workflow_state.get("saved_figures") else "",
             },
         ]
+    saved_figures = [figure for figure in workflow_state.get("saved_figures", []) if os.path.exists(figure)]
+    for slide in slides:
+        slide["visual_element"] = ""
+    slides = _ensure_objective_slide(slides, workflow_state)
     slides = _ensure_analysis_findings_slide(slides, analysis_results)
     slides = _expand_slides_with_visuals(
         slides,
-        workflow_state.get("saved_figures", []),
+        saved_figures,
         analysis_results.get("figure_captions", {}),
     )
 
@@ -495,6 +595,8 @@ def generate_slide_deck(workflow_state: dict[str, Any], output_path: str = "anal
 
         deck_title = slide_plan.get("presentation_title", "Analytics Report")
         deck_subtitle = slide_plan.get("presentation_subtitle", "Decision-ready analytics brief")
+        if user_description and deck_subtitle == "Decision-ready analytics brief":
+            deck_subtitle = textwrap.shorten(user_description, width=90, placeholder="...")
 
         def _style_run(run, *, size: int, color, bold: bool = False, italic: bool = False) -> None:
             run.font.name = font_family
@@ -617,12 +719,12 @@ def generate_slide_deck(workflow_state: dict[str, Any], output_path: str = "anal
 
             if has_visual:
                 pic_top = max(details_top, 1.55)
-                pic_height = min(4.6, 6.7 - pic_top)
+                pic_width, pic_height = _fit_image_size(visual, 5.5, min(4.6, 6.7 - pic_top))
                 current.shapes.add_picture(
                     visual,
                     Inches(7.05),
                     Inches(pic_top),
-                    Inches(5.5),
+                    Inches(pic_width),
                     Inches(pic_height),
                 )
 
@@ -654,9 +756,11 @@ def generate_slide_deck(workflow_state: dict[str, Any], output_path: str = "anal
     )
     lines = [
         slide_plan.get("presentation_title", "Analytics Report"),
-        slide_plan.get("presentation_subtitle", "Executive slide deck"),
+        slide_plan.get("presentation_subtitle", user_description or "Executive slide deck"),
         "",
     ]
+    if user_description:
+        lines.extend(["User context", textwrap.fill(user_description, width=100), ""])
     for slide in slides:
         lines.append(f"Slide {slide.get('slide_number', '?')}: {slide.get('title', 'Untitled')}")
         for detail in slide.get("details", []):

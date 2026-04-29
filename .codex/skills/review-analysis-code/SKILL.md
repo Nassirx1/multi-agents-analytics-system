@@ -16,12 +16,17 @@ Judge analytical quality, business relevance, chart usefulness, clarity, and rep
 - Check whether the chosen analysis matches the dataset shape, granularity, and target question.
 - Flag generic exploratory output that does not meaningfully use the actual dataset.
 - Reject methods that do not suit the variable types, sample size, time structure, or business objective.
+- Confirm the code classifies column roles before choosing methods.
+- Check whether missingness, duplicates, type conversions, and outliers are handled deliberately.
+- Reject causal language unless the dataset has a credible causal design.
 
 ### Analytical Logic
 - Verify the analysis actually answers the stated business problem.
 - Check whether assumptions are explicit and reasonable.
 - Confirm that metrics, comparisons, segments, and time windows make sense for the decision context.
 - Flag shallow analysis that produces activity without insight.
+- Check whether EDA, correlation, association, clustering, anomaly, prediction, or trend analysis is selected based on data support rather than habit.
+- Confirm identifiers, free text, near-constant columns, and leakage-prone variables are excluded from inappropriate analyses.
 
 ### Visualization Quality
 - Check whether each chart communicates a specific useful point.

@@ -5,6 +5,13 @@ Use this skill when generating or improving the final PDF report for the analyti
 ## Goal
 Produce a professional, decision-ready PDF that covers the full workflow and ties evidence to recommendations.
 
+## Use The User Description
+- Treat the user's dataset/business description as the report objective and decision context.
+- Include the description or a concise paraphrase near the Executive Summary.
+- Use it to frame why the dataset, analysis choices, business translation, and recommendations matter.
+- If the analysis cannot answer part of the user's stated goal, explain that limitation clearly.
+- Recommendations should tie back to the user's stated decision context whenever possible.
+
 ## Use Existing Export Architecture First
 - Reuse the current report generation pipeline, templates, and artifact folders when they exist.
 - Improve structure and content quality before replacing any export mechanism.
