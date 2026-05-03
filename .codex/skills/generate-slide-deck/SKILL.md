@@ -1,57 +1,98 @@
 # generate-slide-deck
 
-Use this skill when generating, editing, or visually polishing the final PPTX deck for the analytics workflow (`analytics_workflow/reporting.py::generate_slide_deck` and the `presentation_architect` agent prompt). Do not use it for the PDF report — that belongs to `generate-pdf-report`.
+Use this skill when generating, editing, or visually polishing the final PPTX deck for the analytics workflow. It applies to `analytics_workflow/reporting.py::generate_slide_deck`, `analytics_workflow/deck_rendering.py`, and the `PresentationArchitectAgent` prompt. Do not use it for PDF reporting.
 
 ## Goal
-Produce a concise, executive-ready slide deck that summarizes the complete workflow with consulting-style clarity.
+Produce a concise, executive-ready consulting-style deck that summarizes the full workflow with clear business takeaways, visual evidence, and recommendations.
 
-## Use The User Description
-- Treat the user's dataset/business description as the deck objective and audience context.
-- Use it to shape the title/context slide, problem/objective slide, analysis storyline, and final recommendation.
-- Keep the wording business-facing and specific to the user's stated goal.
-- If the data cannot support part of the user's described goal, include that as a limitation or next-step note rather than implying unsupported evidence.
+## Data Description Parameter
+- Treat the user's dataset/business description as a formal deck input.
+- Use it to frame the title, context, storyline, slide titles, visual takeaways, implications, recommendations, and limitations.
+- If the data does not support part of the user's stated context, say that as a limitation or next step.
+- The runtime may expose this as `data_description`, `user_data_description`, or `workflow_objective.raw_description`; use the first available non-empty value.
 
-## Design Standard
-- professional, practical, simple, concise, visually clean
-- suitable for an executive audience
-- favor strong structure, minimal clutter, and polished communication over flashy visuals
+## Storyline
+Use top-down consulting logic:
+1. Executive answer / main message.
+2. Business context and dataset overview.
+3. Key findings and supporting evidence.
+4. Visual analysis slides for actual generated figures.
+5. Business interpretation and implications.
+6. Recommendations or decision options.
+7. Limitations and next steps.
+8. Closing message.
 
-## Use Existing Deck Export First
-- Reuse `generate_slide_deck` and its helpers (`_expand_slides_with_visuals`, `_title_from_caption`, `_style_run`) before introducing new exporters.
-- Improve messaging, layout, and artifact quality before rebuilding the exporter.
+## Slide Schema
+Each planned slide should follow this shape:
 
-## Preferred Slide Flow
-1. Title / Context
-2. Problem / Objective
-3. Dataset Overview
-4. Market Research Highlights
-5. Analysis Approach
-6. Key Findings / Visual Insights
-7. Business Interpretation
-8. Recommendations / Decision Options
-9. Final Recommendation
-10. Appendix, if needed
+```json
+{
+  "slide_number": 1,
+  "layout_type": "chart_with_takeaways",
+  "title": "Action-oriented slide title",
+  "main_message": "The key point of the slide",
+  "details": [
+    "Short supporting point 1",
+    "Short supporting point 2",
+    "Short supporting point 3"
+  ],
+  "visual_path": "path/to/chart.png",
+  "visual_type": "line_chart",
+  "visual_caption": "Short explanation of the visual",
+  "visual_takeaway": "What the viewer should conclude from the visual",
+  "business_implication": "Why this matters",
+  "speaker_note": "Optional presenter note"
+}
+```
 
-## Slide Rules
-- Each slide carries exactly one main message (the colored callout band).
-- Detail bullets must be rendered with a visible marker (current renderer uses `▪`) and stay short — wrap, do not truncate mid-sentence.
-- Use a single font family across the whole deck (currently Calibri) for typographic consistency.
-- Headers get a thin gold accent rule beneath them; the cover gets the same rule above the title.
-- Use charts only when they add decision value. Avoid walls of text and decorative visuals.
+Legacy `visual_element` is accepted for backward compatibility, but new plans should use `visual_path`.
 
-## Visual Slide Rules (figures auto-promoted to slides)
-- Title must be narrative, derived from the figure caption's first sentence, never the generic `Visual Insight N`.
-- Caption appears once — in the colored callout — never duplicated as a body bullet.
-- Picture is sized to leave breathing room above the footer; do not let it collide with the message band.
+## Layout Types
+- `cover`: title slide only.
+- `executive_summary`: main answer and key takeaway cards.
+- `dataset_overview`: objective, dataset/business context, quality, and scope.
+- `kpi_cards`: metric-heavy summary with short labels.
+- `chart_focus`: one large visual with a takeaway band.
+- `chart_with_takeaways`: visual plus concise supporting bullets.
+- `two_column_insight`: evidence on one side, implication on the other.
+- `insight_cards`: 3 to 4 compact finding cards.
+- `recommendation_matrix`: action, rationale, evidence, impact/timeline.
+- `risk_limitations`: limitations, risks, and next checks.
+- `closing`: final recommendation or next-step message.
 
-## Footer Rules
-- Left foot: deck title (acts as running header).
-- Right foot: `current / total` page indicator.
-- Thin slate rule separates footer from body.
+## Content Rules
+- Use action titles, not generic labels.
+- Each slide should have one main message.
+- Keep bullets short, business-facing, and evidence-backed.
+- Avoid crowded paragraphs, generic AI filler, and repeated slide structures.
+- Use the user's description to explain why the slide matters.
+- Recommendations must connect to data analysis, market context, and business interpretation when available.
 
-## Quality Checks
-- Confirm the deck tells a coherent story from problem to recommendation.
-- Keep visuals readable in presentation format.
-- Ensure the final recommendation is evidence-backed and easy to defend.
-- Verify export paths and artifact names if slide generation code changes.
-- Run `tests/test_slide_deck.py` after any renderer change — it pins slide counts, picture counts, and forbidden legacy strings.
+## Visual Rules
+- Include visual analysis outputs only when the file exists.
+- Each saved figure should appear on at most one visual slide.
+- Use `visual_path`, `visual_type`, `visual_caption`, and `visual_takeaway` for actual visuals.
+- Do not request or render image placeholders when no real visual exists.
+- Visual slides should reserve a clean, well-sized visual area and preserve image aspect ratio.
+- Non-visual slides should remain polished without empty image boxes.
+
+## Style Standard
+- Professional, practical, simple, concise, visually clean.
+- Light neutral background, dark text, subtle accent color, strong whitespace.
+- Consistent font family, color palette, footer, title hierarchy, and spacing.
+- Consulting-company style clarity without flashy decoration or clutter.
+
+## Validation Checks
+- Flag or repair overly long titles.
+- Require a non-empty main message.
+- Keep details to a small number of short bullets.
+- Reject invalid layout types or fall back to a safe layout.
+- Remove missing visual paths and use a clean non-visual layout.
+- Watch for overcrowded slide risk.
+
+## Test Expectations
+- Run `tests/test_slide_deck.py` after renderer changes.
+- Confirm saved figures become visual slides without duplicate captions.
+- Confirm missing visuals do not create broken placeholders.
+- Confirm legacy `visual_element` still works.
+- Confirm the deck includes objective/data-description context when provided.

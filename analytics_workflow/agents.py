@@ -685,22 +685,49 @@ class DecisionMakerAgent(BaseAgent):
 class PresentationArchitectAgent(BaseAgent):
     def execute(self, workflow_state: dict[str, Any]) -> dict[str, Any]:
         slide_skill = _load_repo_skill_text("generate-slide-deck")
+        workflow_objective = workflow_state.get("workflow_objective", {}) or {}
+        data_description = (
+            workflow_state.get("data_description")
+            or workflow_state.get("user_data_description")
+            or (workflow_objective.get("raw_description") if isinstance(workflow_objective, dict) else "")
+            or "No user description provided."
+        )
         schema = {
             "presentation_title": "string",
             "presentation_subtitle": "string",
-            "slides": [{"slide_number": "integer", "title": "string", "main_message": "string", "details": ["string"], "visual_element": "string"}],
+            "slides": [
+                {
+                    "slide_number": "integer",
+                    "layout_type": "cover|executive_summary|dataset_overview|kpi_cards|chart_focus|chart_with_takeaways|two_column_insight|insight_cards|recommendation_matrix|risk_limitations|closing",
+                    "title": "action-oriented slide title",
+                    "main_message": "one clear takeaway",
+                    "details": ["short supporting point"],
+                    "visual_path": "path to an existing figure, blank if none",
+                    "visual_type": "line_chart|bar_chart|scatter|heatmap|model_result|eda_visual|blank",
+                    "visual_caption": "short explanation of the visual",
+                    "visual_takeaway": "what the viewer should conclude from the visual",
+                    "business_implication": "why this matters for the decision",
+                    "speaker_note": "optional presenter note",
+                    "visual_element": "legacy visual path, optional",
+                }
+            ],
         }
         return self.openrouter_client.chat_completion_json(
             self._system_prompt(
                 "Create a concise executive deck structure in a consulting style. "
-                "Use the user's description as the deck objective and audience context."
+                "Use the user's description as the deck objective and audience context. "
+                "Create a top-down story instead of a repetitive report template."
             ),
-            f"USER DESCRIPTION:\n{workflow_state.get('user_data_description', '') or 'No user description provided.'}\n"
-            f"WORKFLOW OBJECTIVE:\n{json_dumps_safe(workflow_state.get('workflow_objective', {}), indent=2)[:1200]}\n"
+            f"DATA DESCRIPTION / BUSINESS CONTEXT:\n{data_description}\n"
+            f"WORKFLOW OBJECTIVE:\n{json_dumps_safe(workflow_objective, indent=2)[:1200]}\n"
             f"SLIDE SKILL:\n{slide_skill[:1800]}\n"
             f"Design a slide deck from this workflow state:\n{json_dumps_safe(workflow_state.get('agent_outputs', {}), indent=2)[:2800]}\n"
             f"FIGURES:\n{json_dumps_safe(workflow_state.get('saved_figures', []), indent=2)}\n"
-            "Use a short MBB-style flow: context, objective, dataset, market, analysis, findings, business meaning, options, recommendation. "
-            "Only request visuals for slides when an actual saved figure supports the message.",
+            "Use a short top-down consulting flow: executive answer, business context, dataset overview, key findings, visual evidence, implications, recommendations, limitations, closing. "
+            "Use varied layout_type values from the schema. Do not make every slide the same structure. "
+            "Titles must be action-oriented and specific, not generic labels like EDA Results or Model Results. "
+            "Only set visual_path when the path is one of the actual saved figures above and the visual supports that slide's message. "
+            "If no visual exists for a slide, leave visual_path blank and choose a non-visual layout. "
+            "Keep details to short business-facing bullets and avoid generic filler.",
             schema,
         )
