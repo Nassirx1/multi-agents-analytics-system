@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from getpass import getpass
+from pathlib import Path
 from typing import Callable
 
 DEFAULT_MODEL = "deepseek/deepseek-v3.2"
-
-PromptFn = Callable[[str], str]
+PROJECT_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,19 +51,32 @@ def build_runtime_config(
     )
 
 
-def prompt_runtime_config(
-    input_fn: PromptFn = input,
-) -> RuntimeConfig:
-    openrouter_api_key = _prompt_required(input_fn, "OpenRouter API key: ")
-    brave_search_api_key = _prompt_required(input_fn, "Brave Search API key: ")
-    model_name = input_fn(
-        f"Model override (press Enter for {DEFAULT_MODEL}): "
-    ).strip()
+def load_runtime_config() -> RuntimeConfig:
+    env_values = _runtime_env_values()
     return build_runtime_config(
-        openrouter_api_key=openrouter_api_key,
-        brave_search_api_key=brave_search_api_key,
-        model_name=model_name,
+        openrouter_api_key=_require_env_value("OPENROUTER_API_KEY", env_values),
+        brave_search_api_key=_require_env_value("BRAVE_API_KEY", env_values),
+        model_name=env_values.get("ANALYTICS_MODEL", ""),
     )
+
+
+def prompt_runtime_config(
+    *,
+    input_fn: Callable[[str], str] = input,
+    secret_input_fn: Callable[[str], str] | None = None,
+) -> RuntimeConfig:
+    secret_prompt = secret_input_fn or getpass
+    env_values = _runtime_env_values()
+    openrouter_key = env_values.get("OPENROUTER_API_KEY", "")
+    brave_key = env_values.get("BRAVE_API_KEY", "")
+    model_name = env_values.get("ANALYTICS_MODEL", "") or DEFAULT_MODEL
+
+    if not openrouter_key:
+        openrouter_key = secret_prompt("OpenRouter API key: ").strip()
+    if not brave_key:
+        brave_key = secret_prompt("Brave Search API key: ").strip()
+    model_override = input_fn(f"Model [{model_name}]: ").strip()
+    return build_runtime_config(openrouter_key, brave_key, model_override or model_name)
 
 
 def mask_secret(value: str, visible_chars: int = 4) -> str:
@@ -93,12 +108,40 @@ def get_active_runtime_config() -> RuntimeConfig | None:
     return _ACTIVE_CONFIG
 
 
-def _prompt_required(prompt_fn: PromptFn, message: str) -> str:
-    while True:
-        value = prompt_fn(message).strip()
+def _runtime_env_values() -> dict[str, str]:
+    values = _read_project_env(PROJECT_ENV_PATH)
+    for name in ("OPENROUTER_API_KEY", "BRAVE_API_KEY", "ANALYTICS_MODEL"):
+        value = os.getenv(name, "").strip()
         if value:
-            return value
-        print("Value is required.")
+            values[name] = value
+    return values
+
+
+def _read_project_env(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        clean = line.strip()
+        if not clean or clean.startswith("#") or "=" not in clean:
+            continue
+        key, raw_value = clean.split("=", 1)
+        key = key.strip()
+        if key not in {"OPENROUTER_API_KEY", "BRAVE_API_KEY", "ANALYTICS_MODEL"}:
+            continue
+        values[key] = raw_value.strip().strip('"').strip("'")
+    return values
+
+
+def _require_env_value(name: str, values: dict[str, str]) -> str:
+    value = values.get(name, "").strip()
+    if not value:
+        raise ValueError(f"Missing {name}. Set it in the environment, add it to .env, or enter it at the CLI prompt.")
+    return value
 
 
 def _require_value(value: str, label: str) -> str:

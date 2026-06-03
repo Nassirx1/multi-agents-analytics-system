@@ -18,21 +18,32 @@ The application runs a 9-step workflow:
 
 The workflow includes a coder-reviewer loop so analysis code is checked for technical quality, analytical fit, business usefulness, and visual output quality before final reporting.
 
-## Runtime inputs
+## Runtime configuration
+
+API keys are kept in memory for normal CLI runs. When you start the workflow, the launcher uses existing environment values or the project `.env` file, then prompts for any missing credentials without writing them to disk.
+
+For non-interactive automation, you may provide process environment variables or a local `.env` file:
+
+```dotenv
+OPENROUTER_API_KEY=
+BRAVE_API_KEY=
+ANALYTICS_MODEL=
+```
+
+The workflow requires OpenRouter and Brave Search values before it starts. Do not commit real credentials.
 
 Each run prompts in the terminal for:
 
-- OpenRouter API key
-- Brave Search API key
-- optional model override
+- missing API credentials, when environment variables are not already set
 - dataset file path or folder path containing CSV files
 - optional dataset or business description from the user
+- optional model override, defaulting to `deepseek/deepseek-v3.2`
 
-If the model override is left blank, the workflow uses `deepseek/deepseek-v3.2`.
+CLI runs use `deepseek/deepseek-v3.2`.
 
 The workflow keeps its existing OpenRouter Chat Completions integration for compatibility, while defaulting to DeepSeek v3.2 on OpenRouter.
 
-API keys are used in memory only for the current process. They are not written to `.env`, config files, or repository state.
+API keys are read into memory from existing environment variables, `.env`, or prompts. The application never writes credentials to `.env`.
 
 ## Installation
 
@@ -62,7 +73,6 @@ python -m analytics_workflow
 
 The launcher will:
 
-- ask for credentials
 - ask for a dataset path or folder
 - ask for optional user context about the dataset or business problem
 - display step-by-step progress from step 1 to step 9
@@ -78,7 +88,7 @@ Typical run outputs include:
 - a PPTX deck such as `analytics_report.pptx` or a timestamped fallback if the target file is locked
 - a run log such as `analytics_run_YYYYMMDD_HHMMSS.log`
 
-Generated outputs are intentionally ignored by Git and are not part of the initial published repository surface.
+Generated outputs are intentionally ignored by Git and are not part of the published repository surface.
 
 ## Repository contents
 

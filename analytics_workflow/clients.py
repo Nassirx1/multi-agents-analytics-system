@@ -47,9 +47,6 @@ def setup_logging(run_id: str | None = None) -> logging.Logger:
     return logger
 
 
-SYSTEM_LOGGER = setup_logging()
-
-
 @dataclass
 class CostTracker:
     model: str = ""
@@ -121,10 +118,25 @@ class OpenRouterClient:
         )
         self.cost_tracker = CostTracker(model=model)
         self._logger = logging.getLogger("OpenRouterClient")
+        self.last_reasoning: dict[str, Any] = {}
+        self.reasoning_history: list[dict[str, Any]] = []
 
     _MAX_TOKENS_LADDER = (4000, 6000, 8000)
+    _REASONING_HISTORY_LIMIT = 20
 
-    def chat_completion(self, system_prompt: str, user_prompt: str, max_retries: int = 3) -> str:
+    def chat_completion(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_retries: int = 3,
+        max_tokens: int | None = None,
+    ) -> str:
+        ladder_index = 0
+        if max_tokens is not None:
+            ladder_index = max(
+                (index for index, token_limit in enumerate(self._MAX_TOKENS_LADDER) if token_limit <= max_tokens),
+                default=0,
+            )
         payload = {
             "model": self.model,
             "messages": [
@@ -132,12 +144,21 @@ class OpenRouterClient:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0.7,
-            "max_tokens": self._MAX_TOKENS_LADDER[0],
+            "max_tokens": max_tokens or self._MAX_TOKENS_LADDER[ladder_index],
         }
+        reasoning_config = self._reasoning_config()
+        if reasoning_config:
+            payload["reasoning"] = reasoning_config
         last_empty_reason = ""
-        ladder_index = 0
         for attempt in range(max_retries):
             try:
+                self._logger.info(
+                    "OpenRouter request attempt %s/%s (model=%s, max_tokens=%s)",
+                    attempt + 1,
+                    max_retries,
+                    self.model,
+                    payload["max_tokens"],
+                )
                 response = self.session.post(
                     f"{self.base_url}/chat/completions",
                     json=payload,
@@ -150,6 +171,7 @@ class OpenRouterClient:
                         usage.get("prompt_tokens", 0),
                         usage.get("completion_tokens", 0),
                     )
+                    self._record_reasoning(data)
                     content, empty_reason = self._extract_message_content(data)
                     if content:
                         return content
@@ -165,6 +187,15 @@ class OpenRouterClient:
                         payload["max_tokens"] = self._MAX_TOKENS_LADDER[ladder_index]
                 else:
                     self._logger.error("API error %s: %s", response.status_code, response.text[:200])
+                    affordable_tokens = self._affordable_token_limit(response.text)
+                    if response.status_code == 402 and affordable_tokens:
+                        capped_tokens = max(512, affordable_tokens - 128)
+                        if capped_tokens < int(payload["max_tokens"]):
+                            payload["max_tokens"] = capped_tokens
+                            self._logger.warning(
+                                "Retrying OpenRouter request with max_tokens=%s after provider credit limit.",
+                                payload["max_tokens"],
+                            )
             except Exception as exc:
                 self._logger.error("OpenRouter request failed on attempt %s: %s", attempt + 1, exc)
                 if attempt == max_retries - 1:
@@ -174,6 +205,36 @@ class OpenRouterClient:
         self.cost_tracker.failed_calls += 1
         detail = f" Last reason: {last_empty_reason}." if last_empty_reason else ""
         raise RuntimeError(f"OpenRouter request failed after {max_retries} retries.{detail}")
+
+    @staticmethod
+    def _affordable_token_limit(response_text: str) -> int | None:
+        match = re.search(r"can only afford\s+(\d+)", response_text or "", flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return max(int(match.group(1)), 0)
+        except ValueError:
+            return None
+
+    def _reasoning_config(self) -> dict[str, Any]:
+        normalized_model = self.model.lower().strip()
+        if normalized_model.startswith("deepseek/deepseek-v3.2"):
+            return {"enabled": True, "exclude": False}
+        return {}
+
+    def _record_reasoning(self, data: dict[str, Any]) -> None:
+        reasoning = self._extract_message_reasoning(data)
+        if not reasoning:
+            return
+        self.last_reasoning = reasoning
+        self.reasoning_history.append(reasoning)
+        if len(self.reasoning_history) > self._REASONING_HISTORY_LIMIT:
+            self.reasoning_history = self.reasoning_history[-self._REASONING_HISTORY_LIMIT :]
+        self._logger.info(
+            "OpenRouter returned reasoning fields for model=%s: %s",
+            self.model,
+            ", ".join(sorted(reasoning)),
+        )
 
     @staticmethod
     def _extract_message_content(data: dict[str, Any]) -> tuple[str, str]:
@@ -204,6 +265,22 @@ class OpenRouterClient:
                 reason += f", refusal={str(refusal)[:120]}"
             return "", reason
         return content.strip(), ""
+
+    @staticmethod
+    def _extract_message_reasoning(data: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            return {}
+        choices = data.get("choices") or []
+        if not choices:
+            return {}
+        first = choices[0] or {}
+        message = first.get("message") or {}
+        reasoning: dict[str, Any] = {}
+        for field_name in ("reasoning", "reasoning_details", "reasoning_content"):
+            value = message.get(field_name)
+            if value not in (None, "", []):
+                reasoning[field_name] = value
+        return reasoning
 
     def chat_completion_json(self, system_prompt: str, user_prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         prompt = (

@@ -24,9 +24,10 @@ Create separate headings for:
 3. Market Research
 4. Analysis Plan
 5. Data Analysis and Visual Findings
-6. Business Translation
-7. Decision Recommendations
-8. Appendix / Sources
+6. Decision Tree Model, when a target column was provided and a model ran
+7. Business Translation
+8. Decision Recommendations
+9. Appendix / Sources
 
 ## Section Rules
 ### Market Research
@@ -39,6 +40,11 @@ Create separate headings for:
 - Explain what the analysis code did in plain business language.
 - Connect the analysis to the business problem, market research, and decision context.
 - Focus on why the analysis matters, not only on technical steps.
+
+### Decision Tree Model
+- Include this section only when the analysis returned a `decision_tree` artifact.
+- Show model metric context: classification accuracy plus baseline accuracy, or regression R2 plus MAE.
+- Render tree rules from structured nodes and edges as rectangles connected by lines, not only as prose.
 
 ### Decision Recommendations
 - State what is recommended.
