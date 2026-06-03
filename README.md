@@ -2,6 +2,8 @@
 
 Multi agents analytics system is a multi-agent analytics workflow that turns user-provided datasets into analytical code, visualizations, business interpretation, decision recommendations, a professional PDF report, and a professional slide deck.
 
+This project is provided for educational purposes.
+
 ## Workflow
 
 The application runs a 9-step workflow:
