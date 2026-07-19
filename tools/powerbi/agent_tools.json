@@ -1,0 +1,663 @@
+{
+  "tool_schemas": [
+    {
+      "name": "powerbi_modeling_operation",
+      "description": "Invoke one allow-listed Power BI Modeling MCP operation inside the active run-local project",
+      "openai_schema": {
+        "name": "powerbi_modeling_operation",
+        "description": "Invoke one allow-listed Power BI Modeling MCP operation inside the active run-local project",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tool_name": {
+              "type": "string",
+              "description": "Allow-listed Modeling MCP tool",
+              "maxLength": 1000,
+              "required": true,
+              "enum": [
+                "connection_operations",
+                "database_operations",
+                "transaction_operations",
+                "model_operations",
+                "table_operations",
+                "column_operations",
+                "partition_operations",
+                "named_expression_operations",
+                "relationship_operations",
+                "measure_operations",
+                "dax_query_operations"
+              ]
+            },
+            "request": {
+              "type": "string",
+              "description": "Arguments validated against the MCP-discovered input schema",
+              "additionalProperties": false,
+              "required": true,
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "min_length": 36,
+              "max_length": 36
+            },
+            "project_root": {
+              "type": "string",
+              "description": "Resolved active run-local Power BI project root",
+              "maxLength": 1000,
+              "required": true
+            }
+          },
+          "required": [
+            "tool_name",
+            "request",
+            "project_root"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "anthropic_schema": {
+        "name": "powerbi_modeling_operation",
+        "description": "Invoke one allow-listed Power BI Modeling MCP operation inside the active run-local project",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "tool_name": {
+              "type": "string",
+              "description": "Allow-listed Modeling MCP tool",
+              "maxLength": 1000,
+              "enum": [
+                "connection_operations",
+                "database_operations",
+                "transaction_operations",
+                "model_operations",
+                "table_operations",
+                "column_operations",
+                "partition_operations",
+                "named_expression_operations",
+                "relationship_operations",
+                "measure_operations",
+                "dax_query_operations"
+              ]
+            },
+            "request": {
+              "type": "object",
+              "description": "Arguments validated against the MCP-discovered input schema",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "project_root": {
+              "type": "string",
+              "description": "Resolved active run-local Power BI project root",
+              "maxLength": 1000
+            }
+          },
+          "required": [
+            "tool_name",
+            "request",
+            "project_root"
+          ]
+        }
+      },
+      "validation_rules": [
+        {
+          "parameter": "tool_name",
+          "rules": {
+            "maxLength": 1000,
+            "required": true,
+            "enum": [
+              "connection_operations",
+              "database_operations",
+              "transaction_operations",
+              "model_operations",
+              "table_operations",
+              "column_operations",
+              "partition_operations",
+              "named_expression_operations",
+              "relationship_operations",
+              "measure_operations",
+              "dax_query_operations"
+            ]
+          }
+        },
+        {
+          "parameter": "request",
+          "rules": {
+            "additionalProperties": false,
+            "required": true,
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "min_length": 36,
+            "max_length": 36
+          }
+        },
+        {
+          "parameter": "project_root",
+          "rules": {
+            "maxLength": 1000,
+            "required": true
+          }
+        }
+      ],
+      "error_responses": [
+        {
+          "error_code": "invalid_input",
+          "error_message": "Invalid input parameters provided",
+          "http_status": 400,
+          "retry_after": null,
+          "details": {
+            "validation_errors": []
+          }
+        },
+        {
+          "error_code": "authentication_required",
+          "error_message": "Authentication required to access this tool",
+          "http_status": 401,
+          "retry_after": null,
+          "details": null
+        },
+        {
+          "error_code": "insufficient_permissions",
+          "error_message": "Insufficient permissions to perform this operation",
+          "http_status": 403,
+          "retry_after": null,
+          "details": null
+        },
+        {
+          "error_code": "rate_limit_exceeded",
+          "error_message": "Rate limit exceeded. Please try again later",
+          "http_status": 429,
+          "retry_after": 60,
+          "details": null
+        },
+        {
+          "error_code": "internal_error",
+          "error_message": "Internal server error occurred",
+          "http_status": 500,
+          "retry_after": null,
+          "details": null
+        },
+        {
+          "error_code": "service_unavailable",
+          "error_message": "Service temporarily unavailable",
+          "http_status": 503,
+          "retry_after": 300,
+          "details": null
+        }
+      ],
+      "rate_limits": {
+        "requests_per_minute": 30,
+        "requests_per_hour": 500,
+        "requests_per_day": 5000,
+        "burst_limit": 5,
+        "cooldown_period": 60,
+        "rate_limit_key": "user_id"
+      },
+      "examples": [
+        {
+          "description": "Example usage of powerbi_modeling_operation",
+          "input": {
+            "tool_name": "connection_operations",
+            "request": {
+              "key": "value"
+            },
+            "project_root": "example_value"
+          },
+          "expected_output": {
+            "data": [
+              {
+                "id": 1,
+                "value": "example"
+              },
+              {
+                "id": 2,
+                "value": "another"
+              }
+            ],
+            "metadata": {
+              "count": 2,
+              "processed_at": "2024-01-15T10:30:00Z"
+            }
+          }
+        },
+        {
+          "description": "Minimal example of powerbi_modeling_operation with required parameters only",
+          "input": {
+            "tool_name": "connection_operations",
+            "request": {
+              "key": "value"
+            },
+            "project_root": "example_value"
+          },
+          "expected_output": {
+            "data": [
+              {
+                "id": 1,
+                "value": "example"
+              },
+              {
+                "id": 2,
+                "value": "another"
+              }
+            ],
+            "metadata": {
+              "count": 2,
+              "processed_at": "2024-01-15T10:30:00Z"
+            }
+          }
+        }
+      ],
+      "metadata": {
+        "category": "data",
+        "idempotent": false,
+        "side_effects": [
+          "May modify only the active semantic model within a transaction"
+        ],
+        "dependencies": [
+          "powerbi-modeling-mcp"
+        ],
+        "security_requirements": [
+          "Strict tool allow-list",
+          "Run-directory confinement",
+          "No Fabric publish",
+          "No security-role operations"
+        ],
+        "generated_at": "2024-01-15T10:30:00Z",
+        "schema_version": "1.0",
+        "input_parameters": 3,
+        "output_parameters": 1,
+        "required_parameters": 3,
+        "optional_parameters": 0
+      }
+    },
+    {
+      "name": "powerbi_author_report",
+      "description": "Write PBIR pages and visuals from an approved plan into the active project and validate them",
+      "openai_schema": {
+        "name": "powerbi_author_report",
+        "description": "Write PBIR pages and visuals from an approved plan into the active project and validate them",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_root": {
+              "type": "string",
+              "description": "Resolved active run-local Power BI project root",
+              "maxLength": 1000,
+              "required": true
+            },
+            "approved_plan": {
+              "type": "string",
+              "description": "Validated PowerBIPlan contract",
+              "additionalProperties": false,
+              "required": true,
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "min_length": 36,
+              "max_length": 36
+            }
+          },
+          "required": [
+            "project_root",
+            "approved_plan"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "anthropic_schema": {
+        "name": "powerbi_author_report",
+        "description": "Write PBIR pages and visuals from an approved plan into the active project and validate them",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "project_root": {
+              "type": "string",
+              "description": "Resolved active run-local Power BI project root",
+              "maxLength": 1000
+            },
+            "approved_plan": {
+              "type": "object",
+              "description": "Validated PowerBIPlan contract",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "project_root",
+            "approved_plan"
+          ]
+        }
+      },
+      "validation_rules": [
+        {
+          "parameter": "project_root",
+          "rules": {
+            "maxLength": 1000,
+            "required": true
+          }
+        },
+        {
+          "parameter": "approved_plan",
+          "rules": {
+            "additionalProperties": false,
+            "required": true,
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "min_length": 36,
+            "max_length": 36
+          }
+        }
+      ],
+      "error_responses": [
+        {
+          "error_code": "invalid_input",
+          "error_message": "Invalid input parameters provided",
+          "http_status": 400,
+          "retry_after": null,
+          "details": {
+            "validation_errors": []
+          }
+        },
+        {
+          "error_code": "authentication_required",
+          "error_message": "Authentication required to access this tool",
+          "http_status": 401,
+          "retry_after": null,
+          "details": null
+        },
+        {
+          "error_code": "insufficient_permissions",
+          "error_message": "Insufficient permissions to perform this operation",
+          "http_status": 403,
+          "retry_after": null,
+          "details": null
+        },
+        {
+          "error_code": "rate_limit_exceeded",
+          "error_message": "Rate limit exceeded. Please try again later",
+          "http_status": 429,
+          "retry_after": 60,
+          "details": null
+        },
+        {
+          "error_code": "internal_error",
+          "error_message": "Internal server error occurred",
+          "http_status": 500,
+          "retry_after": null,
+          "details": null
+        },
+        {
+          "error_code": "service_unavailable",
+          "error_message": "Service temporarily unavailable",
+          "http_status": 503,
+          "retry_after": 300,
+          "details": null
+        }
+      ],
+      "rate_limits": {
+        "requests_per_minute": 30,
+        "requests_per_hour": 3000,
+        "requests_per_day": 30000,
+        "burst_limit": 30,
+        "cooldown_period": 60,
+        "rate_limit_key": "user_id"
+      },
+      "examples": [
+        {
+          "description": "Example usage of powerbi_author_report",
+          "input": {
+            "project_root": "example_value",
+            "approved_plan": {
+              "key": "value"
+            }
+          },
+          "expected_output": {
+            "success": true,
+            "file_path": "/path/to/file.txt",
+            "size": 1024,
+            "modified_at": "2024-01-15T10:30:00Z"
+          }
+        },
+        {
+          "description": "Minimal example of powerbi_author_report with required parameters only",
+          "input": {
+            "project_root": "example_value",
+            "approved_plan": {
+              "key": "value"
+            }
+          },
+          "expected_output": {
+            "success": true,
+            "file_path": "/path/to/file.txt",
+            "size": 1024,
+            "modified_at": "2024-01-15T10:30:00Z"
+          }
+        }
+      ],
+      "metadata": {
+        "category": "file",
+        "idempotent": true,
+        "side_effects": [
+          "Writes only scoped .Report PBIR files"
+        ],
+        "dependencies": [
+          "powerbi-report-authoring-cli"
+        ],
+        "security_requirements": [
+          "No Modeling MCP",
+          "No Desktop Bridge",
+          "Run-directory confinement"
+        ],
+        "generated_at": "2024-01-15T10:30:00Z",
+        "schema_version": "1.0",
+        "input_parameters": 2,
+        "output_parameters": 1,
+        "required_parameters": 2,
+        "optional_parameters": 0
+      }
+    },
+    {
+      "name": "powerbi_bridge_validate",
+      "description": "Open the exact PBIP through Power BI Desktop Bridge, verify methods, reload serially, and capture every page",
+      "openai_schema": {
+        "name": "powerbi_bridge_validate",
+        "description": "Open the exact PBIP through Power BI Desktop Bridge, verify methods, reload serially, and capture every page",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pbip_path": {
+              "type": "string",
+              "description": "Exact PBIP inside the active run",
+              "maxLength": 1000,
+              "required": true,
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "min_length": 36,
+              "max_length": 36
+            },
+            "wait_seconds": {
+              "type": "string",
+              "description": "Bounded Bridge readiness budget",
+              "minimum": 1,
+              "maximum": 900,
+              "required": true,
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "min_length": 36,
+              "max_length": 36
+            }
+          },
+          "required": [
+            "pbip_path",
+            "wait_seconds"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "anthropic_schema": {
+        "name": "powerbi_bridge_validate",
+        "description": "Open the exact PBIP through Power BI Desktop Bridge, verify methods, reload serially, and capture every page",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "pbip_path": {
+              "type": "string",
+              "description": "Exact PBIP inside the active run",
+              "maxLength": 1000,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "wait_seconds": {
+              "type": "integer",
+              "description": "Bounded Bridge readiness budget",
+              "minimum": 1,
+              "maximum": 900,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "pbip_path",
+            "wait_seconds"
+          ]
+        }
+      },
+      "validation_rules": [
+        {
+          "parameter": "pbip_path",
+          "rules": {
+            "maxLength": 1000,
+            "required": true,
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "min_length": 36,
+            "max_length": 36
+          }
+        },
+        {
+          "parameter": "wait_seconds",
+          "rules": {
+            "minimum": 1,
+            "maximum": 900,
+            "required": true,
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "min_length": 36,
+            "max_length": 36
+          }
+        }
+      ],
+      "error_responses": [
+        {
+          "error_code": "invalid_input",
+          "error_message": "Invalid input parameters provided",
+          "http_status": 400,
+          "retry_after": null,
+          "details": {
+            "validation_errors": []
+          }
+        },
+        {
+          "error_code": "authentication_required",
+          "error_message": "Authentication required to access this tool",
+          "http_status": 401,
+          "retry_after": null,
+          "details": null
+        },
+        {
+          "error_code": "insufficient_permissions",
+          "error_message": "Insufficient permissions to perform this operation",
+          "http_status": 403,
+          "retry_after": null,
+          "details": null
+        },
+        {
+          "error_code": "rate_limit_exceeded",
+          "error_message": "Rate limit exceeded. Please try again later",
+          "http_status": 429,
+          "retry_after": 60,
+          "details": null
+        },
+        {
+          "error_code": "internal_error",
+          "error_message": "Internal server error occurred",
+          "http_status": 500,
+          "retry_after": null,
+          "details": null
+        },
+        {
+          "error_code": "service_unavailable",
+          "error_message": "Service temporarily unavailable",
+          "http_status": 503,
+          "retry_after": 300,
+          "details": null
+        }
+      ],
+      "rate_limits": {
+        "requests_per_minute": 10,
+        "requests_per_hour": 100,
+        "requests_per_day": 1000,
+        "burst_limit": 3,
+        "cooldown_period": 60,
+        "rate_limit_key": "user_id"
+      },
+      "examples": [
+        {
+          "description": "Example usage of powerbi_bridge_validate",
+          "input": {
+            "pbip_path": "123e4567-e89b-12d3-a456-426614174000",
+            "wait_seconds": 42
+          },
+          "expected_output": {
+            "success": true,
+            "message": "powerbi_bridge_validate executed successfully",
+            "result": "example result"
+          }
+        },
+        {
+          "description": "Minimal example of powerbi_bridge_validate with required parameters only",
+          "input": {
+            "pbip_path": "123e4567-e89b-12d3-a456-426614174000",
+            "wait_seconds": 42
+          },
+          "expected_output": {
+            "success": true,
+            "message": "powerbi_bridge_validate executed successfully",
+            "result": "example result"
+          }
+        }
+      ],
+      "metadata": {
+        "category": "compute",
+        "idempotent": true,
+        "side_effects": [
+          "Opens Power BI Desktop and captures local screenshots"
+        ],
+        "dependencies": [
+          "powerbi-desktop-bridge-cli",
+          "Power BI Desktop"
+        ],
+        "security_requirements": [
+          "Exact resolved path match",
+          "Serial operations per PID",
+          "Local named-pipe transport"
+        ],
+        "generated_at": "2024-01-15T10:30:00Z",
+        "schema_version": "1.0",
+        "input_parameters": 2,
+        "output_parameters": 1,
+        "required_parameters": 2,
+        "optional_parameters": 0
+      }
+    }
+  ],
+  "metadata": {
+    "generated_by": "tool_schema_generator.py",
+    "input_file": "tools\\powerbi\\agent_tool_descriptions.json",
+    "tool_count": 3,
+    "generation_timestamp": "2024-01-15T10:30:00Z",
+    "schema_version": "1.0"
+  },
+  "validation_summary": {
+    "total_tools": 3,
+    "total_parameters": 7,
+    "total_validation_rules": 7,
+    "total_examples": 6
+  }
+}

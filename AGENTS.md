@@ -1,9 +1,17 @@
 # Project Agents
 
 ## Purpose
-This repository is a multi-agent analytics system that transforms uploaded datasets into analysis, business interpretation, decision recommendations, a professional PDF report, and a professional slide deck.
+This repository is a multi-agent analytics system that transforms uploaded datasets into one explicitly selected output: a decision-oriented PDF/PowerPoint report or a self-contained interactive HTML dashboard.
+
+## Runtime Priorities
+1. Ask for the output path before loading credentials, datasets, or agents.
+2. Keep the Analytics Report and HTML Dashboard paths isolated after selection.
+3. Prefer accurate, source-backed results over visual or narrative polish.
+4. Preserve readability, visibility, trustworthiness, and executive suitability.
+5. Fail clearly when validation cannot establish that an artifact is complete and usable.
 
 ## Core Workflow
+### Analytics Report Path
 1. Data Understander
 2. Market Researcher
 3. Analysis Planner
@@ -14,20 +22,29 @@ This repository is a multi-agent analytics system that transforms uploaded datas
 8. PDF Report Generator
 9. Slide Deck Generator
 
+### HTML Dashboard Path
+1. Data Understander
+2. Dashboard Planning Agent
+3. HTML Dashboard Generator
+4. HTML Dashboard QA Agent
+
 ## Engineering Rules
 - Inspect the repository structure before major changes.
 - Prefer small, composable modules and explicit contracts between workflow steps.
 - Keep prompts and templates separate from orchestration logic when practical.
 - Avoid hidden coupling between agents or report/export stages.
-- Never hardcode or persist secrets; prompt for required API credentials on every run and keep them in memory only.
+- Never hardcode, log, or commit secrets. Load required credentials from the process, user, or machine environment, with the git-ignored local `.env` as a fallback. Never prompt the user to type credentials.
 - Preserve reproducibility through stable inputs, deterministic checks, and traceable artifact paths.
 - Log important workflow steps without exposing secrets.
 - Save intermediate artifacts when they help debugging, review, reporting, or export validation.
+- Keep Power BI MCP and authoring skills available only as Codex tooling; the Python runtime dashboard path must not import or invoke them.
+- Keep benchmark suites, recursive evaluation records, test fixtures, and internal QA utilities out of the public repository.
 
 ## Validation Rules
 - After meaningful code changes, run the most relevant tests or smoke checks available.
 - If analysis, report, or export code changes, verify the artifact generation path end to end.
 - Prefer deterministic validation over subjective inspection when possible.
+- Do not report an HTML dashboard as complete until its deterministic QA receipt passes.
 
 ## Self-Evolution Engineer Rules
 - When asked to evolve this workflow, Codex acts as the self-evolution engineer.
@@ -49,3 +66,12 @@ This repository is a multi-agent analytics system that transforms uploaded datas
 - EDA findings should briefly explain the code visuals, not replace them. Analysis slides should be visual-first whenever code figures or structured chart data exist.
 - Do not add heavy slide or visualization dependencies without a clear runtime justification.
 - Preserve backward compatibility for existing workflow outputs, the PDF report generator, and the code reviewer loop.
+
+## HTML Dashboard Rules
+- The dashboard path must never invoke PDF, PowerPoint, PBIP, PBIR, Power BI Desktop, or Power BI runtime generation.
+- Produce one self-contained HTML file with no required network, CDN, font, image, or script dependency.
+- Validate every planned dataset and field before rendering.
+- Use no more than two charts per page; add pages instead of crowding visuals.
+- Global filters must recalculate KPIs, charts, and detail tables from the embedded source rows.
+- Render explicit no-data states and reject blank, malformed, clipped, or overlapping visuals.
+- Keep charts source-backed and choose chart types that match the field types.

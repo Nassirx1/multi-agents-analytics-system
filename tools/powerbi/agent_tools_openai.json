@@ -1,0 +1,119 @@
+{
+  "functions": [
+    {
+      "name": "powerbi_modeling_operation",
+      "description": "Invoke one allow-listed Power BI Modeling MCP operation inside the active run-local project",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tool_name": {
+            "type": "string",
+            "description": "Allow-listed Modeling MCP tool",
+            "maxLength": 1000,
+            "required": true,
+            "enum": [
+              "connection_operations",
+              "database_operations",
+              "transaction_operations",
+              "model_operations",
+              "table_operations",
+              "column_operations",
+              "partition_operations",
+              "named_expression_operations",
+              "relationship_operations",
+              "measure_operations",
+              "dax_query_operations"
+            ]
+          },
+          "request": {
+            "type": "string",
+            "description": "Arguments validated against the MCP-discovered input schema",
+            "additionalProperties": false,
+            "required": true,
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "min_length": 36,
+            "max_length": 36
+          },
+          "project_root": {
+            "type": "string",
+            "description": "Resolved active run-local Power BI project root",
+            "maxLength": 1000,
+            "required": true
+          }
+        },
+        "required": [
+          "tool_name",
+          "request",
+          "project_root"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "powerbi_author_report",
+      "description": "Write PBIR pages and visuals from an approved plan into the active project and validate them",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project_root": {
+            "type": "string",
+            "description": "Resolved active run-local Power BI project root",
+            "maxLength": 1000,
+            "required": true
+          },
+          "approved_plan": {
+            "type": "string",
+            "description": "Validated PowerBIPlan contract",
+            "additionalProperties": false,
+            "required": true,
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "min_length": 36,
+            "max_length": 36
+          }
+        },
+        "required": [
+          "project_root",
+          "approved_plan"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "powerbi_bridge_validate",
+      "description": "Open the exact PBIP through Power BI Desktop Bridge, verify methods, reload serially, and capture every page",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pbip_path": {
+            "type": "string",
+            "description": "Exact PBIP inside the active run",
+            "maxLength": 1000,
+            "required": true,
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "min_length": 36,
+            "max_length": 36
+          },
+          "wait_seconds": {
+            "type": "string",
+            "description": "Bounded Bridge readiness budget",
+            "minimum": 1,
+            "maximum": 900,
+            "required": true,
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "min_length": 36,
+            "max_length": 36
+          }
+        },
+        "required": [
+          "pbip_path",
+          "wait_seconds"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

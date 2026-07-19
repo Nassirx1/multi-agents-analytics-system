@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build Consulting PPTX"
+  short_description: "Create polished executive PowerPoint decks"
+  default_prompt: "Use $build-consulting-pptx to turn analytical evidence into a consulting-style executive presentation."

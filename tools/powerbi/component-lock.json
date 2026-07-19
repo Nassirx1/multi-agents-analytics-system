@@ -1,0 +1,25 @@
+{
+  "captured_at": "2026-07-13",
+  "skills_for_fabric": {
+    "version": "0.3.7",
+    "commit": "b961296e97a89a39e81e10501c2ef846ad0c54db",
+    "license": "MIT"
+  },
+  "packages": {
+    "@microsoft/powerbi-modeling-mcp": {
+      "version": "0.5.0-beta.11",
+      "integrity": "sha512-a5aO6glpBFIlaHHe+8LRunNPExJqsbnskRHDW5y7Vb7Jac85KqMUUEvxRuL2IkwJDDng0FEhfZNUbqw3ehmQIw==",
+      "license": "Microsoft Software License Terms (Preview)"
+    },
+    "@microsoft/powerbi-report-authoring-cli": {
+      "version": "0.1.4",
+      "integrity": "sha512-SibT9RCS7dQdqYGhU0/r1yixYZgxRsjlpKSF+a/wGczN0YRG6M9nRoFBe2d4hptwwUeqvnkjNxpo7NTUxXNIDQ==",
+      "license": "MIT"
+    },
+    "@microsoft/powerbi-desktop-bridge-cli": {
+      "version": "0.1.2",
+      "integrity": "sha512-N0nons2u+1W+PYQ59tmhPRMMR0ZrmPY4djOjHjpM9UyUDWySucu8S5H4fMO0ltxkykC4Ter/6Aqp4ZhMQm6ymw==",
+      "license": "MIT"
+    }
+  }
+}

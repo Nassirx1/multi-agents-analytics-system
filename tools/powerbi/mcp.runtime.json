@@ -1,0 +1,31 @@
+{
+  "server": {
+    "name": "powerbi-modeling-mcp",
+    "command": "node_modules/.bin/powerbi-modeling-mcp.cmd",
+    "args": [
+      "--start",
+      "--readwrite",
+      "--skipconfirmation"
+    ]
+  },
+  "allowed_tools": [
+    "connection_operations",
+    "database_operations",
+    "transaction_operations",
+    "model_operations",
+    "table_operations",
+    "column_operations",
+    "measure_operations",
+    "relationship_operations",
+    "dax_query_operations",
+    "partition_operations",
+    "named_expression_operations"
+  ],
+  "denied_capabilities": [
+    "fabric_deployment",
+    "security_role_management",
+    "translation_management",
+    "arbitrary_filesystem_access"
+  ],
+  "scope": "new run-local PBIP projects only"
+}

@@ -55,6 +55,14 @@ class VisualSpec:
     fallback_reason: str = ""
     recommended_template: str = ""
     slide_candidate: bool = False
+    evidence_ids: list[str] = field(default_factory=list)
+    source_ids: list[str] = field(default_factory=list)
+    sample_size: int | None = None
+    denominator: str = ""
+    method: str = ""
+    confidence: str = ""
+    caveat: str = ""
+    as_of_date: str = ""
 
     @classmethod
     def from_any(cls, value: Any) -> "VisualSpec | None":
@@ -101,6 +109,14 @@ class VisualSpec:
             fallback_reason=compact_whitespace(value.get("fallback_reason")),
             recommended_template=compact_whitespace(value.get("recommended_template")),
             slide_candidate=bool(value.get("slide_candidate", False)),
+            evidence_ids=[compact_whitespace(item) for item in value.get("evidence_ids", []) if compact_whitespace(item)] if isinstance(value.get("evidence_ids"), list) else [],
+            source_ids=[compact_whitespace(item) for item in value.get("source_ids", []) if compact_whitespace(item)] if isinstance(value.get("source_ids"), list) else [],
+            sample_size=int(value["sample_size"]) if str(value.get("sample_size", "")).isdigit() else None,
+            denominator=compact_whitespace(value.get("denominator")),
+            method=compact_whitespace(value.get("method")),
+            confidence=compact_whitespace(value.get("confidence")),
+            caveat=shorten(value.get("caveat", ""), 180),
+            as_of_date=compact_whitespace(value.get("as_of_date")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +143,14 @@ class VisualSpec:
             "fallback_reason": self.fallback_reason,
             "recommended_template": self.recommended_template,
             "slide_candidate": self.slide_candidate,
+            "evidence_ids": list(self.evidence_ids),
+            "source_ids": list(self.source_ids),
+            "sample_size": self.sample_size,
+            "denominator": self.denominator,
+            "method": self.method,
+            "confidence": self.confidence,
+            "caveat": self.caveat,
+            "as_of_date": self.as_of_date,
         }
 
 
@@ -142,22 +166,40 @@ class SlideSpec:
     visual: VisualSpec | None = None
     metrics: list[dict[str, str]] = field(default_factory=list)
     speaker_note: str = ""
+    evidence_ids: list[str] = field(default_factory=list)
+    source_ids: list[str] = field(default_factory=list)
+    decision_status: str = ""
+    confidence: str = ""
+    caveat: str = ""
 
     @classmethod
     def from_legacy(cls, slide: dict[str, Any], index: int) -> "SlideSpec":
         template = compact_whitespace(slide.get("template"))
         if not template:
             template = template_for_legacy_layout(compact_whitespace(slide.get("layout_type")))
-        visual = VisualSpec.from_any(
-            slide.get("visual")
-            or {
-                "type": "image",
-                "image_path": slide.get("visual_path") or slide.get("visual_element"),
-                "chart_type": slide.get("visual_type", ""),
-                "takeaway": slide.get("visual_takeaway", ""),
-            }
-        )
+        raw_visual = slide.get("visual")
+        if not raw_visual:
+            legacy_visual_path = slide.get("visual_path") or slide.get("visual_element")
+            raw_visual = (
+                {
+                    "type": "image",
+                    "image_path": legacy_visual_path,
+                    "chart_type": slide.get("visual_type", ""),
+                    "takeaway": slide.get("visual_takeaway", ""),
+                }
+                if legacy_visual_path
+                else None
+            )
+        visual = VisualSpec.from_any(raw_visual)
         details = refine_bullets(slide.get("details", []), max_items=4)
+        raw_blocks = slide.get("content_blocks", [])
+        content_blocks = (
+            [ContentBlock.from_any(block) for block in raw_blocks if isinstance(block, (dict, list, str))]
+            if isinstance(raw_blocks, list)
+            else []
+        )
+        if not content_blocks and details:
+            content_blocks = [ContentBlock(type="bullets", items=details)]
         return cls(
             slide_number=int(slide.get("slide_number") or index),
             slide_role=compact_whitespace(slide.get("slide_role") or "analysis"),
@@ -165,9 +207,15 @@ class SlideSpec:
             headline=refine_headline(slide.get("headline") or slide.get("title"), f"Finding {index}"),
             main_message=shorten(slide.get("main_message", ""), 170),
             subtitle=shorten(slide.get("subtitle", ""), 120),
-            content_blocks=[ContentBlock(type="bullets", items=details)] if details else [],
+            content_blocks=content_blocks,
             visual=visual,
+            metrics=[dict(metric) for metric in slide.get("metrics", []) if isinstance(metric, dict)][:4],
             speaker_note=shorten(slide.get("speaker_note", ""), 220),
+            evidence_ids=[compact_whitespace(item) for item in slide.get("evidence_ids", []) if compact_whitespace(item)] if isinstance(slide.get("evidence_ids"), list) else [],
+            source_ids=[compact_whitespace(item) for item in slide.get("source_ids", []) if compact_whitespace(item)] if isinstance(slide.get("source_ids"), list) else [],
+            decision_status=compact_whitespace(slide.get("decision_status")),
+            confidence=compact_whitespace(slide.get("confidence")),
+            caveat=shorten(slide.get("caveat", ""), 180),
         )
 
     @property
@@ -189,6 +237,11 @@ class SlideSpec:
             "visual": self.visual.to_dict() if self.visual else None,
             "metrics": [dict(metric) for metric in self.metrics],
             "speaker_note": self.speaker_note,
+            "evidence_ids": list(self.evidence_ids),
+            "source_ids": list(self.source_ids),
+            "decision_status": self.decision_status,
+            "confidence": self.confidence,
+            "caveat": self.caveat,
         }
 
     def to_legacy_dict(self) -> dict[str, Any]:
@@ -204,6 +257,9 @@ class SlideSpec:
             "visual_type": self.visual.chart_type if self.visual else "",
             "visual_takeaway": self.visual.takeaway if self.visual else "",
             "speaker_note": self.speaker_note,
+            "evidence_ids": list(self.evidence_ids),
+            "source_ids": list(self.source_ids),
+            "decision_status": self.decision_status,
         }
 
 
@@ -216,6 +272,25 @@ class DeckSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
     dataset_context: dict[str, Any] = field(default_factory=dict)
     slides: list[SlideSpec] = field(default_factory=list)
+
+    @classmethod
+    def from_any(cls, value: dict[str, Any]) -> "DeckSpec":
+        slides = [
+            SlideSpec.from_legacy(slide, index)
+            for index, slide in enumerate(value.get("slides", []) or [], start=1)
+            if isinstance(slide, dict)
+        ]
+        return cls(
+            deck_title=shorten(value.get("deck_title") or value.get("title") or "Analytics Executive Brief", 90),
+            audience=compact_whitespace(value.get("audience")) or "executive",
+            theme=compact_whitespace(value.get("theme")) or "consulting_minimal",
+            subtitle=shorten(value.get("subtitle", ""), 120),
+            metadata=dict(value.get("metadata", {})) if isinstance(value.get("metadata"), dict) else {},
+            dataset_context=(
+                dict(value.get("dataset_context", {})) if isinstance(value.get("dataset_context"), dict) else {}
+            ),
+            slides=slides,
+        ).renumber()
 
     def renumber(self) -> "DeckSpec":
         for index, slide in enumerate(self.slides, start=1):

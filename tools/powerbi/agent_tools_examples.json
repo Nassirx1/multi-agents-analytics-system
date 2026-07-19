@@ -1,0 +1,116 @@
+{
+  "examples": {
+    "powerbi_modeling_operation": [
+      {
+        "description": "Example usage of powerbi_modeling_operation",
+        "input": {
+          "tool_name": "connection_operations",
+          "request": {
+            "key": "value"
+          },
+          "project_root": "example_value"
+        },
+        "expected_output": {
+          "data": [
+            {
+              "id": 1,
+              "value": "example"
+            },
+            {
+              "id": 2,
+              "value": "another"
+            }
+          ],
+          "metadata": {
+            "count": 2,
+            "processed_at": "2024-01-15T10:30:00Z"
+          }
+        }
+      },
+      {
+        "description": "Minimal example of powerbi_modeling_operation with required parameters only",
+        "input": {
+          "tool_name": "connection_operations",
+          "request": {
+            "key": "value"
+          },
+          "project_root": "example_value"
+        },
+        "expected_output": {
+          "data": [
+            {
+              "id": 1,
+              "value": "example"
+            },
+            {
+              "id": 2,
+              "value": "another"
+            }
+          ],
+          "metadata": {
+            "count": 2,
+            "processed_at": "2024-01-15T10:30:00Z"
+          }
+        }
+      }
+    ],
+    "powerbi_author_report": [
+      {
+        "description": "Example usage of powerbi_author_report",
+        "input": {
+          "project_root": "example_value",
+          "approved_plan": {
+            "key": "value"
+          }
+        },
+        "expected_output": {
+          "success": true,
+          "file_path": "/path/to/file.txt",
+          "size": 1024,
+          "modified_at": "2024-01-15T10:30:00Z"
+        }
+      },
+      {
+        "description": "Minimal example of powerbi_author_report with required parameters only",
+        "input": {
+          "project_root": "example_value",
+          "approved_plan": {
+            "key": "value"
+          }
+        },
+        "expected_output": {
+          "success": true,
+          "file_path": "/path/to/file.txt",
+          "size": 1024,
+          "modified_at": "2024-01-15T10:30:00Z"
+        }
+      }
+    ],
+    "powerbi_bridge_validate": [
+      {
+        "description": "Example usage of powerbi_bridge_validate",
+        "input": {
+          "pbip_path": "123e4567-e89b-12d3-a456-426614174000",
+          "wait_seconds": 42
+        },
+        "expected_output": {
+          "success": true,
+          "message": "powerbi_bridge_validate executed successfully",
+          "result": "example result"
+        }
+      },
+      {
+        "description": "Minimal example of powerbi_bridge_validate with required parameters only",
+        "input": {
+          "pbip_path": "123e4567-e89b-12d3-a456-426614174000",
+          "wait_seconds": 42
+        },
+        "expected_output": {
+          "success": true,
+          "message": "powerbi_bridge_validate executed successfully",
+          "result": "example result"
+        }
+      }
+    ]
+  }
+}

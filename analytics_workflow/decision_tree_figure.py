@@ -22,6 +22,13 @@ def build_sklearn_tree_artifact(
     train_score: Any = None,
     test_score: Any = None,
     baseline_score: Any = None,
+    balanced_accuracy: Any = None,
+    precision: Any = None,
+    recall: Any = None,
+    f1: Any = None,
+    confusion_matrix: Any = None,
+    positive_test_support: Any = None,
+    cross_validation: Any = None,
     train_mae: Any = None,
     test_mae: Any = None,
     class_names: list[str] | None = None,
@@ -35,6 +42,10 @@ def build_sklearn_tree_artifact(
         model = aliases.pop("fitted_model_or_pipeline")
     if feature_names is None and "feature_names" in aliases:
         feature_names = aliases.pop("feature_names")
+    balanced_accuracy = balanced_accuracy if balanced_accuracy is not None else aliases.pop("balanced_accuracy_score", None)
+    precision = precision if precision is not None else aliases.pop("test_precision", None)
+    recall = recall if recall is not None else aliases.pop("test_recall", None)
+    f1 = f1 if f1 is not None else aliases.pop("f1_score", aliases.pop("test_f1", None))
     if model is None:
         raise ValueError("model must be a fitted sklearn decision tree instance or Pipeline")
     original_model = model
@@ -56,6 +67,7 @@ def build_sklearn_tree_artifact(
     sample_counts = list(getattr(tree, "n_node_samples", []))
     classes = class_names or [clean_tree_text(item) for item in getattr(model, "classes_", [])]
     normalized_model_type = clean_tree_text(model_type).lower() or "classification"
+    scaler_params = _pipeline_scaler_parameters(original_model)
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
@@ -91,8 +103,15 @@ def build_sklearn_tree_artifact(
 
         feature_index = int(features[node_index])
         feature_name = safe_features[feature_index] if 0 <= feature_index < len(safe_features) else f"feature_{feature_index}"
-        threshold = _format_number(thresholds[node_index])
+        model_threshold = _format_number(thresholds[node_index])
+        threshold = model_threshold
+        threshold_unit = "model"
+        if feature_name in scaler_params:
+            mean, scale = scaler_params[feature_name]
+            threshold = _format_number(float(thresholds[node_index]) * scale + mean)
+            threshold_unit = "original"
         raw_split_label = f"{feature_name} <= {threshold}"
+        raw_model_label = f"{feature_name} <= {model_threshold} (model-scaled)"
         split_label = humanize_decision_tree_condition(feature_name, threshold, operator="<=", split_label=True)
         if sample_text:
             split_label += f"\n{sample_text}"
@@ -106,8 +125,11 @@ def build_sklearn_tree_artifact(
                 "type": "split",
                 "feature": feature_name,
                 "threshold": threshold,
+                "threshold_unit": threshold_unit,
+                "model_threshold": model_threshold,
                 "rule": split_label,
                 "raw_rule": raw_split_label,
+                "raw_model_rule": raw_model_label,
             }
         )
         left_condition = humanize_decision_tree_condition(feature_name, threshold, operator="<=")
@@ -122,6 +144,7 @@ def build_sklearn_tree_artifact(
                     "label": "True",
                     "condition": left_condition,
                     "raw_condition": raw_left_condition,
+                    "model_condition": f"{feature_name} <= {model_threshold}",
                 }
             )
             walk(left, depth + 1, rule_parts + [left_condition])
@@ -133,6 +156,7 @@ def build_sklearn_tree_artifact(
                     "label": "False",
                     "condition": right_condition,
                     "raw_condition": raw_right_condition,
+                    "model_condition": f"{feature_name} > {model_threshold}",
                 }
             )
             walk(right, depth + 1, rule_parts + [right_condition])
@@ -154,6 +178,13 @@ def build_sklearn_tree_artifact(
                 "train_accuracy": _format_percent(train_score),
                 "test_accuracy": _format_percent(test_score),
                 "baseline_accuracy": _format_percent(baseline_score),
+                "balanced_accuracy": _format_percent(balanced_accuracy),
+                "precision": _format_percent(precision),
+                "recall": _format_percent(recall),
+                "f1": _format_percent(f1),
+                "confusion_matrix": confusion_matrix,
+                "positive_test_support": positive_test_support,
+                "cross_validation": cross_validation,
             }
         )
     else:
@@ -338,6 +369,40 @@ def _feature_names_from_pipeline(pipeline: Any, tree_model: Any) -> list[str]:
         elif hasattr(estimator, "feature_names_in_"):
             names = _names_from_candidate(getattr(estimator, "feature_names_in_"))
     return names
+
+
+def _pipeline_scaler_parameters(pipeline: Any) -> dict[str, tuple[float, float]]:
+    """Map transformed numeric feature names to inverse StandardScaler parameters."""
+    steps = getattr(pipeline, "steps", None)
+    if not isinstance(steps, list):
+        return {}
+    parameters: dict[str, tuple[float, float]] = {}
+    for _, estimator in steps:
+        transformers = getattr(estimator, "transformers_", None)
+        if not isinstance(transformers, list):
+            continue
+        for _, transformer, columns in transformers:
+            if isinstance(transformer, str) and transformer in {"drop", "passthrough"}:
+                continue
+            scaler = transformer
+            nested_steps = getattr(transformer, "steps", None)
+            if isinstance(nested_steps, list):
+                scaler = next(
+                    (candidate for _, candidate in nested_steps if hasattr(candidate, "mean_") and hasattr(candidate, "scale_")),
+                    transformer,
+                )
+            means = getattr(scaler, "mean_", None)
+            scales = getattr(scaler, "scale_", None)
+            if means is None or scales is None:
+                continue
+            try:
+                names = [clean_tree_text(item) for item in list(columns)]
+                for name, mean, scale in zip(names, list(means), list(scales)):
+                    if name:
+                        parameters[name] = (float(mean), float(scale) or 1.0)
+            except (TypeError, ValueError):
+                continue
+    return parameters
 
 
 def _names_from_candidate(candidate: Any) -> list[str]:
