@@ -1,0 +1,104 @@
+{
+  "captured_at": "2026-07-13T14:08:00+03:00",
+  "machine": {
+    "os": "Windows 10 Pro",
+    "node": "24.13.0",
+    "power_bi_desktop": "2.155.756.0 (26.06) x64"
+  },
+  "downloaded": [
+    "@microsoft/powerbi-modeling-mcp@0.5.0-beta.11",
+    "@microsoft/powerbi-report-authoring-cli@0.1.4",
+    "@microsoft/powerbi-desktop-bridge-cli@0.1.2",
+    "microsoft/skills-for-fabric v0.3.7 (commit b961296e97a89a39e81e10501c2ef846ad0c54db)"
+  ],
+  "installed": {
+    "node_location": "tools/powerbi/node_modules",
+    "installation_mode": "project-local npm install --ignore-scripts --no-audit --no-fund",
+    "lock": "tools/powerbi/package-lock.json",
+    "versions_and_integrities": "tools/powerbi/component-lock.json"
+  },
+  "mcp_configuration": {
+    "path": "tools/powerbi/mcp.runtime.json",
+    "global_configuration_modified": false,
+    "tool_allowlist_enforced": true
+  },
+  "skill_installation": {
+    "location": "skills/powerbi-authoring",
+    "skills": [
+      "check-updates",
+      "semantic-model-authoring",
+      "powerbi-report-planning",
+      "powerbi-report-design",
+      "powerbi-report-authoring",
+      "powerbi-report-management"
+    ],
+    "license": "MIT"
+  },
+  "bridge_setup": {
+    "preview_setting_effective": true,
+    "setting": "Enable external tool access to Power BI Desktop through secure local APIs",
+    "exact_pbip_opened": true,
+    "unsaved_changes": false,
+    "required_methods_verified": [
+      "application.state.get/v1",
+      "file.reload/v1",
+      "report.snapshot.capture/v1"
+    ],
+    "reload_succeeded": true,
+    "screenshot_capture_succeeded": true
+  },
+  "files_modified": [
+    ".env.example",
+    ".gitignore",
+    "README.md",
+    "analytics_workflow/__init__.py",
+    "analytics_workflow/cli.py",
+    "analytics_workflow/clients.py",
+    "analytics_workflow/orchestrator.py",
+    "analytics_workflow/output_paths.py",
+    "analytics_workflow/pipeline_runtime.py",
+    "analytics_workflow/runtime_config.py",
+    "analytics_workflow/workflow_steps.py",
+    "analytics_workflow/powerbi/",
+    "scripts/create_powerbi_smoke_project.py",
+    "scripts/run_full_smoke.py",
+    "skills/powerbi-authoring/",
+    "tests/test_powerbi_path.py",
+    "tests/test_runtime_config.py",
+    "tools/powerbi/"
+  ],
+  "smoke_tests": {
+    "interactive_prompt_order": "passed: exact output-path menu printed before environment credential validation",
+    "disabled_feature_gate": "passed: POWER_BI_FEATURE_DISABLED emitted before credential or dataset access",
+    "component_versions": "passed",
+    "report_author_doctor": "passed",
+    "report_visual_catalog": "passed",
+    "modeling_mcp_initialize_and_tool_discovery": "passed outside restricted sandbox",
+    "pbir_validation": "passed with zero errors and zero warnings",
+    "desktop_bridge_open_status_manifest_reload_screenshot": "passed",
+    "modeling_mcp_live_refresh": "passed once; a later repeat after reload timed out at 180 seconds",
+    "dax_validation": "passed; EVALUATE ROW for Total Value resolved Int64",
+    "dax_execution": "passed; MCP reported one result row",
+    "rendered_visual_inspection": "chart and slicer rendered with values; KPI card template was subsequently reformatted and PBIR-validated, but its final Bridge recapture timed out",
+    "agent_tool_schemas": "3 of 3 valid for OpenAI and Anthropic formats",
+    "pilot_agent_evaluation": "excellent, 100% fixture success, 0 critical issues",
+    "python_tests": "239 passed",
+    "full_live_agent_run": "not tested: required OPENROUTER_API_KEY and BRAVE_API_KEY environment credentials were absent; the configured Qwen QA default has not been exercised live"
+  },
+  "remaining_manual_steps": [
+    "Set OPENROUTER_API_KEY and BRAVE_API_KEY in the process, Windows user, or Windows machine environment.",
+    "Optionally override the default qwen/qwen3-vl-30b-a3b-instruct QA model with POWER_BI_QA_MODEL.",
+    "Set POWER_BI_ENABLED=true only after accepting preview and data-privacy implications.",
+    "Keep the Power BI Desktop external-tool preview setting enabled and restart Desktop after changing it.",
+    "Review the Microsoft Modeling MCP Preview license before any use beyond internal development/testing.",
+    "Run one complete credentialed Power BI branch and require the final vision QA receipt before treating it as end-to-end validated."
+  ],
+  "preview_and_compatibility_limitations": [
+    "Power BI Modeling MCP and the agentic Desktop workflow are public preview.",
+    "No durable numeric Bridge minimum is published; runtime gates on the live manifest.",
+    "The Modeling MCP win32 package warns that its Resources directory is absent and may require unrestricted Windows Event Log access when handling startup warnings.",
+    "Desktop Bridge and Modeling MCP refresh latency can exceed the configured wait on this tested Desktop build.",
+    "v1 supports new local Import-mode CSV PBIP projects only; Fabric publishing and arbitrary PBIX editing are out of scope.",
+    "Vision QA sends rendered screenshots, potentially including data values, to OpenRouter."
+  ]
+}

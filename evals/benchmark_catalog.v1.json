@@ -1,0 +1,33 @@
+{
+  "catalog_version": "1.0.0",
+  "catalog_sha256": "9f37a48937b3d2b739d4be0a93135f03a9b080592cf5bde5190b5e2fb280bb23",
+  "benchmark_count": 24,
+  "source": "benchmark_suite.catalog:load_benchmark_catalog",
+  "quality_rubric": "benchmark_suite.rubrics:score_output_quality",
+  "benchmarks": [
+    {"id": "maa.routing.choice_before_credentials.v1", "target": "routing.initial_choice_before_credentials"},
+    {"id": "maa.routing.analytics_branch_isolation.v1", "target": "routing.analytics_branch_isolation"},
+    {"id": "maa.routing.dashboard_branch_isolation.v1", "target": "routing.dashboard_branch_isolation"},
+    {"id": "maa.routing.legacy_resume_route.v1", "target": "routing.legacy_checkpoint_resume"},
+    {"id": "maa.agent.profile_contract.v1", "target": "agent.data_understander"},
+    {"id": "maa.agent.source_traceability.v1", "target": "agent.market_researcher"},
+    {"id": "maa.agent.feasible_analysis_plan.v1", "target": "agent.analysis_planner"},
+    {"id": "maa.agent.safe_reproducible_analysis.v1", "target": "agent.data_scientist_coder"},
+    {"id": "maa.agent.reviewer_detects_and_repairs.v1", "target": "agent.code_reviewer"},
+    {"id": "maa.agent.evidence_preserving_translation.v1", "target": "agent.business_translator"},
+    {"id": "maa.agent.actionable_bounded_recommendations.v1", "target": "agent.decision_maker"},
+    {"id": "maa.generator.pdf_generation_and_semantic_qa.v1", "target": "generator.pdf_report"},
+    {"id": "maa.generator.slide_generation_and_geometry_qa.v1", "target": "generator.slide_deck"},
+    {"id": "maa.agent.source_grounded_dashboard_plan.v1", "target": "agent.dashboard_planning"},
+    {"id": "maa.generator.self_contained_interactive_html.v1", "target": "generator.html_dashboard"},
+    {"id": "maa.agent.qa_rejects_broken_dashboard.v1", "target": "agent.html_dashboard_qa"},
+    {"id": "maa.workflow.analytics_offline_e2e.v1", "target": "workflow.analytics_report_e2e"},
+    {"id": "maa.workflow.dashboard_offline_e2e.v1", "target": "workflow.html_dashboard_e2e"},
+    {"id": "maa.reliability.checkpoint_resume_integrity.v1", "target": "reliability.checkpoint_resume"},
+    {"id": "maa.reliability.secret_redaction.v1", "target": "reliability.secret_redaction"},
+    {"id": "maa.reliability.timeout_and_retry_bounds.v1", "target": "reliability.timeout_retry_bounds"},
+    {"id": "maa.quality.four_dimension_output_quality.v1", "target": "quality.four_dimension_score"},
+    {"id": "maa.quality.cross_artifact_consistency.v1", "target": "quality.cross_artifact_consistency"},
+    {"id": "maa.quality.held_out_metamorphic_controls.v1", "target": "quality.held_out_metamorphic_controls"}
+  ]
+}

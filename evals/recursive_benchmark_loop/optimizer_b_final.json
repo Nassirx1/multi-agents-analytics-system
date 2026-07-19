@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.0",
+  "review_id": "optimizer-b-final-pass-02",
+  "reviews": [
+    "optimizer-a-pass-01",
+    "optimizer-b-pass-01",
+    "optimizer-a-round-2-code"
+  ],
+  "role": "codex_recursive_optimizer_b",
+  "scope": "benchmark_and_evaluation_infrastructure_only",
+  "verdict": "benchmark_assurance_accepted_workflow_candidate_rejected",
+  "verdict_reason": "The required assurance controls are executable in the actual default runner and the original fabricated-evidence/raw-gate bypass is closed. The refreshed full pilot correctly remains failed at 29/30 because the Decision Maker violates required action fields and two preserved trust gates. The benchmark harness is accepted; the workflow release is not.",
+  "acceptance_checks": {
+    "fake_evidence_and_raw_gate_exploit": {
+      "status": "closed",
+      "evidence": [
+        "tests/test_benchmark_optimizer_a_round2.py:test_fabricated_strings_and_raw_gate_booleans_fail_closed",
+        "tests/test_benchmark_optimizer_b_final.py:test_raw_boolean_quality_executor_cannot_bypass_default_runner"
+      ],
+      "result": "Assured scoring returns 0 and fails; run_default_catalog rejects overrides of canonical quality and metamorphic evaluators."
+    },
+    "threshold": {
+      "status": "closed",
+      "value": 85.0,
+      "legacy_normalized_minimum": 84.44444444444444,
+      "evidence": "benchmark_suite/rubrics.py:OVERALL_MINIMUM_SCORE"
+    },
+    "executable_negative_controls": {
+      "status": "closed_for_declared_controls",
+      "routes": ["analytics_report", "html_dashboard"],
+      "controls": [
+        "record order",
+        "whitespace",
+        "path relocation",
+        "keyword injection",
+        "stale evidence hash",
+        "blank visual",
+        "clipped visual",
+        "secret leakage",
+        "secret redaction",
+        "wrong-route artifact",
+        "unrelated chart"
+      ],
+      "evidence": "benchmark_suite/evaluators.py:_metamorphic"
+    },
+    "immutable_catalog_fingerprint": {
+      "status": "closed",
+      "catalog_sha256": "9f37a48937b3d2b739d4be0a93135f03a9b080592cf5bde5190b5e2fb280bb23",
+      "evidence": [
+        "evals/benchmark_catalog.v1.json",
+        "benchmark_suite/runner.py:verify_frozen_catalog_manifest"
+      ],
+      "result": "Default runs abort before execution when version, count, hash, IDs, or target mapping differs."
+    },
+    "deterministic_receipts": {
+      "status": "closed_for_semantic_verdicts",
+      "result_fingerprint": "71d21670300e81a80558dd7f98e21ded984272d3edb336a4efaeb3a45c0a27b6",
+      "evidence": [
+        "benchmark_suite/runner.py:_semantic_result_fingerprint",
+        "tests/test_benchmark_optimizer_b_final.py:test_threshold_is_85_and_result_fingerprint_is_repeatable"
+      ],
+      "caveat": "Wall-clock timestamps and durations intentionally remain run-specific; the semantic fingerprint excludes them."
+    },
+    "runner_integration": {
+      "status": "closed",
+      "evidence": [
+        "benchmark_suite/evaluators.py:_quality",
+        "benchmark_suite/runner.py:run_default_catalog",
+        "tests/test_benchmark_optimizer_b_final.py:test_default_quality_path_uses_assured_scoring_on_both_routes"
+      ]
+    }
+  },
+  "finding_disposition": [
+    {"id": "B01_THRESHOLD_REGRESSION", "status": "closed", "reason": "85/100 is stricter than 76/90 and is tested."},
+    {"id": "B02_UNRESOLVED_EVIDENCE_LOCATORS", "status": "closed", "reason": "Typed confined hash-bound JSON-pointer locators are required."},
+    {"id": "B03_SELF_ASSERTED_HARD_GATES", "status": "closed_for_raw_bypass", "reason": "Bare booleans, stale hashes, wrong issuer kinds, and protected evaluator overrides fail. Evaluator process separation is still a defense-in-depth opportunity."},
+    {"id": "B04_HELD_OUT_IS_PUBLIC_AND_MUTABLE", "status": "open", "reason": "The executable negative controls are valuable development controls, but their variants and expected results remain visible in source and are not a genuinely secret held-out set."},
+    {"id": "B05_DECLARATIVE_CASES_CAN_BE_UNEXECUTED", "status": "closed", "reason": "Catalog targets exactly match the concrete evaluator registry and missing evaluators fail."},
+    {"id": "B06_SUBJECTIVE_SCORES_LACK_ANCHORS", "status": "partial", "reason": "Five explicit anchors and downward rounding exist; blinded rater calibration and agreement measurement do not."},
+    {"id": "B07_SAME_EVIDENCE_CAN_SCORE_EVERYTHING", "status": "closed", "reason": "Assurance prevents one locator from being assigned to semantically different criteria."},
+    {"id": "B08_LEGACY_CROSSWALK_IS_NOT_EQUIVALENCE", "status": "open", "reason": "The crosswalk remains declarative; criterion-by-criterion mutation equivalence has not been demonstrated."},
+    {"id": "B09_ITERATIONS_ARE_NOT_COMPARABLE", "status": "partial", "reason": "Catalog and semantic-result fingerprints now support stable comparison, but environment, renderer, evaluator, and fixture fingerprints are not all included."},
+    {"id": "B10_FLAKINESS_POLICY_IS_UNSPECIFIED", "status": "partial", "reason": "Repeated semantic fingerprints are tested; the full acceptance suite does not automatically execute three repetitions or quarantine instability."},
+    {"id": "B11_EXECUTIVE_AND_READABILITY_KEYWORD_GAMING", "status": "partial", "reason": "Keyword injection and unrelated-chart controls execute, but broader contradictory-priority and hidden-caveat cases remain."},
+    {"id": "B12_RENDERED_VISIBILITY_COVERAGE_IS_TOO_NARROW", "status": "open", "reason": "PDF, slide, and HTML QA execute, but an explicit all-page/all-slide/multi-viewport/filter-state coverage matrix is absent."},
+    {"id": "B13_OPTIMIZER_BOUNDARY_IS_POLICY_ONLY", "status": "partial", "reason": "Frozen catalog checks and protected evaluator targets block major score tampering; a general optimizer path allow-list and diff approval gate are absent."},
+    {"id": "B14_SYMBOLIC_FIXTURES_DO_NOT_PROVE_EDGE_CASES", "status": "open", "reason": "Evaluators resolve the current labels, but fixtures are not all content-addressed with separate oracle hashes."},
+    {"id": "B15_NO_PAIRED_REGRESSION_ACCEPTANCE_RULE", "status": "partial", "reason": "The suite correctly rejects any current case or hard-gate failure and publishes stable fingerprints; automatic baseline-versus-candidate paired delta and rollback logic remain absent."}
+  ],
+  "verification": {
+    "focused_tests": {
+      "command": ".venv311/Scripts/python.exe -m unittest tests.test_benchmark_optimizer_b_final tests.test_benchmark_optimizer_a_round2 tests.test_benchmark_optimizer_b tests.test_benchmark_runner tests.test_benchmark_catalog -q",
+      "result": "54 passed"
+    },
+    "full_pilot": {
+      "command": ".venv311/Scripts/python.exe scripts/run_benchmark_suite.py --output-dir evals/benchmark_pilot",
+      "result": "29 passed, 1 failed, 0 skipped",
+      "suite_passed": false,
+      "receipt_sha256": "3bc82b305739b1b82b6b13ef95a5ecd91d8ee20902926cc3616eb543bc770db3",
+      "failed_benchmark": "maa.agent.actionable_bounded_recommendations.v1",
+      "failed_route": "analytics_report",
+      "failure": "Decision Maker omitted required action fields; unsupported_claims_absent and high_stakes_safety_clear failed."
+    }
+  },
+  "release_gate": {
+    "benchmark_infrastructure": "accepted",
+    "analytics_workflow_candidate": "rejected_until_decision_maker_contract_passes",
+    "remaining_required_fix": "Repair the Decision Maker output contract in a separate authorized runtime change, then rerun all 30 executions without weakening the benchmark."
+  }
+}

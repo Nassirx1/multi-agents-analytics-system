@@ -1,0 +1,51 @@
+{
+  "goal": "Build and validate a local Power BI PBIP/PBIR dashboard from uploaded CSV data with minimal agent cost and strict branch isolation.",
+  "description": "The Power BI branch must skip report-oriented research, Python analysis coding, narrative translation, and decision-report stages. It should profile source data, plan a semantic model and dashboard, build and author it with scoped Microsoft tools, validate it through Desktop Bridge, and perform independent screenshot QA.",
+  "tasks": [
+    "Profile uploaded CSV schema, types, quality, and KPI candidates",
+    "Plan tables, relationships, measures, DAX, pages, visuals, slicers, and acceptance checks",
+    "Build and validate the semantic model with allow-listed Modeling MCP tools",
+    "Author and validate scoped PBIR report files",
+    "Open, reload, refresh, inspect, and capture every page through Desktop Bridge",
+    "Perform independent multimodal QA and route bounded repairs"
+  ],
+  "constraints": {
+    "max_response_time": 1800000,
+    "budget_per_task": 1.0,
+    "quality_threshold": 0.9,
+    "concurrent_tasks": 1,
+    "data_retention_days": 0,
+    "security_level": "strict",
+    "compliance_requirements": ["branch isolation", "environment-only credentials", "path confinement"]
+  },
+  "team_size": 5,
+  "performance_requirements": {
+    "high_throughput": false,
+    "fault_tolerance": true,
+    "low_latency": true,
+    "scalability": "small",
+    "availability": 0.95
+  },
+  "safety_requirements": [
+    "No PDF or PowerPoint tools on the Power BI branch",
+    "No market research or arbitrary shell tools on the Power BI branch",
+    "Modeling MCP is exposed only to the Modeling Agent",
+    "Desktop Bridge is supervisor-owned",
+    "No success without Bridge screenshots and vision QA",
+    "Structured redacted logs and bounded retries"
+  ],
+  "integration_requirements": [
+    "Power BI Modeling MCP",
+    "Power BI Report Authoring Skill and CLI",
+    "Power BI Desktop Bridge",
+    "OpenRouter multimodal QA"
+  ],
+  "scale_requirements": {
+    "initial_users": 1,
+    "peak_concurrent_users": 1,
+    "data_volume_gb": 0.1,
+    "requests_per_hour": 5,
+    "geographic_regions": ["local Windows workstation"],
+    "growth_projection": "preview"
+  }
+}

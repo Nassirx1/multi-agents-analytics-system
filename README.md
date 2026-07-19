@@ -1,102 +1,307 @@
-# Multi agents analytics system
+# Multi-Agent Analytics System
 
-Multi agents analytics system is a multi-agent analytics workflow that turns user-provided datasets into analytical code, visualizations, business interpretation, decision recommendations, a professional PDF report, and a professional slide deck.
+This repository converts user-provided CSV datasets into one of two explicitly selected outputs:
 
-This project is provided for educational purposes.
+1. a decision-oriented analytics report in PDF and PowerPoint; or
+2. a self-contained interactive HTML dashboard.
 
-## Workflow
+The two runtime paths are isolated after the initial choice. The HTML dashboard path does not create PBIP/PBIR files or call Power BI, Modeling MCP, Desktop Bridge, PDF, PowerPoint, or the Codex self-evolution system.
 
-The application runs a 9-step workflow:
+## Initial output choice
 
-1. Data Understander
-2. Market Researcher
-3. Analysis Planner
-4. Data Scientist Coder
-5. Code Reviewer
-6. Business Translator
-7. Decision Maker
-8. PDF Report Generator
-9. Slide Deck Generator
+Every interactive run displays this menu before credentials, datasets, or agents are loaded:
 
-The workflow includes a coder-reviewer loop so analysis code is checked for technical quality, analytical fit, business usefulness, and visual output quality before final reporting.
+```text
+Choose an output path:
 
-## Runtime configuration
+1. Analytics Report
+   - PDF
+   - PowerPoint
 
-API keys are kept in memory for normal CLI runs. When you start the workflow, the launcher uses existing environment values or the project `.env` file, then prompts for any missing credentials without writing them to disk.
+2. BI Dashboard (HTML)
+   - self-contained HTML file
+   - interactive filters and charts
+   - works offline in a browser
+```
 
-For non-interactive automation, you may provide process environment variables or a local `.env` file:
+Non-interactive callers must explicitly pass `output_path="analytics_report"` or `output_path="html_dashboard"`. New run manifests persist that route. Legacy manifests containing `power_bi` are accepted as a compatibility alias and resume through the HTML dashboard path; no Power BI runtime is constructed.
+
+## Path 1: Analytics Report
+
+The existing nine-stage workflow remains intact:
+
+| Stage | Responsibility |
+| --- | --- |
+| Data Understander | Profiles the uploaded datasets, identifies fields and data-quality risks, and establishes the analytical context. |
+| Market Researcher | Adds relevant external context when market research is enabled and credentials are available. |
+| Analysis Planner | Converts the objective and data profile into a testable analysis plan. |
+| Data Scientist Coder | Produces dataset-specific, reproducible Python analysis and chart artifacts. |
+| Code Reviewer | Checks the analysis for correctness, evidence quality, and runtime safety, then requests bounded repairs when needed. |
+| Business Translator | Turns validated statistical findings into clear business implications. |
+| Decision Maker | Prioritizes evidence-backed recommendations, actions, risks, and next steps. |
+| PDF Report Generator | Builds and validates the detailed decision-oriented PDF report. |
+| Slide Deck Generator | Builds and validates the concise executive PowerPoint presentation. |
+
+This path preserves the coder-reviewer loop, evidence bundle, decision recommendations, concurrent PDF/PPTX export, PowerPoint backend selection, artifact receipts, and checkpoint resume behavior.
+
+## Path 2: HTML Dashboard
+
+The dashboard path intentionally uses a smaller isolated workflow:
+
+```mermaid
+flowchart LR
+    A["Initial output choice"] --> B["Data Understander"]
+    B --> C["Dashboard Planning Agent"]
+    C --> D["HTML Dashboard Generator"]
+    D --> E["Deterministic HTML Dashboard QA"]
+    E -->|"Passed"| F["Self-contained dashboard.html"]
+    E -->|"Failed"| G["Run fails with a stable error code"]
+```
+
+| Stage | Responsibility |
+| --- | --- |
+| Data Understander | Creates the shared dataset profile and quality summary without invoking the report exporters. |
+| Dashboard Planning Agent | Selects defensible KPIs, filters, pages, fields, aggregations, and chart types from the verified schema. |
+| HTML Dashboard Generator | Produces one offline HTML file containing the reviewed rows, responsive layout, filter logic, and native SVG/HTML charts. |
+| HTML Dashboard QA Agent | Verifies source fidelity, field references, page density, interactivity, responsive behavior, and the absence of external dependencies. |
+
+The planning agent receives the user objective, aggregate data-understanding output, and a deterministic dataset profile. It has no browser, shell, export, MCP, or filesystem tools. The generator validates all referenced datasets and fields before creating a dashboard.
+
+The generated dashboard:
+
+- is a single self-contained `dashboard.html` file;
+- embeds the reviewed CSV rows and needs no local server or network connection;
+- provides interactive global filters, KPI cards, charts, page tabs, and a bounded detail table;
+- supports bar, line, scatter, and histogram charts;
+- keeps at most two charts on each page/tab;
+- uses responsive desktop/mobile layout and a print fallback;
+- makes no CDN, API, image, font, or script requests;
+- escapes embedded data and writes source hashes without exposing credentials;
+- is never accompanied by PDF, PPTX, PBIP, PBIR, or Power BI screenshots on this branch.
+
+Deterministic QA verifies the HTML structure, embedded payload, source rows, page and chart counts, responsive layout, filters, semantic fallback, and absence of external network dependencies. A run is marked completed only after `dashboard_qa_receipt.json` passes and `dashboard_success_receipt.json` is written.
+
+### Dashboard charts and interaction
+
+The planning stage matches each visual to the available field types. Unsupported or missing field references are rejected before rendering.
+
+| Chart | Required data | Intended use | Rendering behavior |
+| --- | --- | --- | --- |
+| Bar | One categorical field, optionally one numeric measure | Compare categories or ranked segments | Shows up to 12 categories using count, sum, mean, minimum, or maximum. |
+| Line | One date, numeric, or ordered field plus a numeric measure | Show a time or ordered trend | Sorts the horizontal values and plots an aggregated series. |
+| Scatter | Two numeric fields | Inspect relationships, clusters, and outliers | Plots up to 600 filtered observations with point tooltips. |
+| Histogram | One numeric field | Show a distribution | Groups the filtered values into 10 equal-width bins. |
+
+Every dashboard page contains no more than two charts. Additional analysis is placed on another tab so titles, labels, and plots remain readable. Global filters recalculate every KPI, chart, and detail table in the browser from the embedded source rows. When a filter leaves no usable observations, the visual displays a clear `No matching data` state instead of a misleading empty plot.
+
+Charts use native browser HTML and SVG rather than remote chart libraries. This keeps the dashboard portable and offline, and the QA checks guard against malformed SVG fills, clipped content, blank visuals, and unexpected network requests.
+
+The default portable limit is 25,000 embedded rows across all datasets. Larger dashboard inputs fail with `HTML_DASHBOARD_TOO_MANY_ROWS` instead of silently sampling or showing misleading filtered metrics. Override the limit only when the resulting file size is acceptable:
+
+```dotenv
+HTML_DASHBOARD_MAX_ROWS=25000
+HTML_DASHBOARD_STAGE_TIMEOUT_SECONDS=300
+```
+
+## Credentials and runtime configuration
+
+Credentials are never requested interactively. They are loaded from:
+
+1. process environment variables;
+2. Windows user environment variables;
+3. Windows machine environment variables; or
+4. the git-ignored project `.env` fallback.
+
+Required names:
 
 ```dotenv
 OPENROUTER_API_KEY=
 BRAVE_API_KEY=
-ANALYTICS_MODEL=
 ```
 
-The workflow requires OpenRouter and Brave Search values before it starts. Do not commit real credentials.
+Missing credentials fail immediately after the output-path choice and before dataset prompting. Secrets stay in memory and are redacted from logs. Never commit `.env`.
 
-Each run prompts in the terminal for:
+Common non-secret settings are documented in [.env.example](.env.example):
 
-- missing API credentials, when environment variables are not already set
-- dataset file path or folder path containing CSV files
-- optional dataset or business description from the user
-- optional model override, defaulting to `deepseek/deepseek-v3.2`
+```dotenv
+ANALYTICS_MODEL=
+STRUCTURED_ANALYTICS_MODEL=
+CODE_ANALYTICS_MODEL=
+PRESENTATION_ANALYTICS_MODEL=
+MARKET_RESEARCH_ENABLED=true
+PRESENTATION_ARCHITECT_ENABLED=false
+AGENT_REQUEST_TIMEOUT_SECONDS=180
+CODE_LOOP_REQUEST_TIMEOUT_SECONDS=900
+PRESENTATION_AGENT_TIMEOUT_SECONDS=900
+ANALYSIS_TIMEOUT_SECONDS=120
+MAX_CSV_BYTES=104857600
+MAX_CSV_ROWS=1000000
+MAX_CSV_COLUMNS=500
+SHARE_SAMPLE_VALUES_WITH_MODEL=false
+PRESENTATION_BACKEND=auto
+POWERPOINT_MCP_COMMAND=mcp-ppt
+HTML_DASHBOARD_STAGE_TIMEOUT_SECONDS=300
+HTML_DASHBOARD_MAX_ROWS=25000
+```
 
-CLI runs use `deepseek/deepseek-v3.2`.
+The default OpenRouter model is `deepseek/deepseek-v3.2`. Dataset sample values are not sent to the model unless `SHARE_SAMPLE_VALUES_WITH_MODEL=true`; column names, types, counts, missingness, ranges, and aggregate profile metadata are still sent.
 
-The workflow keeps its existing OpenRouter Chat Completions integration for compatibility, while defaulting to DeepSeek v3.2 on OpenRouter.
+## Installation and running
 
-API keys are read into memory from existing environment variables, `.env`, or prompts. The application never writes credentials to `.env`.
-
-## Installation
-
-Use Python 3.11+.
+Use Python 3.11 (`>=3.11,<3.12`):
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-If you prefer not to activate the virtual environment:
-
-```powershell
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-The requirements include the core analytics stack used by generated code, including `scipy` and `statsmodels` for richer statistical and time-series analysis when needed.
-
-## Running the workflow
-
-Use the Python entrypoint:
-
-```powershell
 python -m analytics_workflow
 ```
 
-The launcher will:
+Programmatic example:
 
-- ask for a dataset path or folder
-- ask for optional user context about the dataset or business problem
-- display step-by-step progress from step 1 to step 9
-- generate timestamped figures as needed
-- generate PDF and PPTX outputs with safe timestamped fallbacks when old files are locked
+```python
+from pathlib import Path
+from analytics_workflow import load_runtime_config, run_non_interactive_workflow
+
+result = run_non_interactive_workflow(
+    load_runtime_config(),
+    [Path("data.csv")],
+    user_data_description="Build an operating dashboard for the main KPIs and drivers.",
+    output_path="html_dashboard",
+    workspace=Path.cwd(),
+)
+```
+
+Resume an interrupted run with:
+
+```python
+from pathlib import Path
+from analytics_workflow import load_runtime_config, resume_non_interactive_workflow
+
+result = resume_non_interactive_workflow(
+    load_runtime_config(),
+    Path("runs/<run-id>"),
+)
+```
 
 ## Outputs
 
-Typical run outputs include:
+Report runs write their existing analysis, figures, evidence, PDF, PPTX, QA receipts, and delivery artifacts beneath `runs/<run-id>/`.
 
-- timestamped figure files such as `figure_1_YYYYMMDD_HHMMSS.png`
-- a PDF report such as `analytics_report.pdf` or a timestamped fallback if the target file is locked
-- a PPTX deck such as `analytics_report.pptx` or a timestamped fallback if the target file is locked
-- a run log such as `analytics_run_YYYYMMDD_HHMMSS.log`
+Dashboard runs write:
 
-Generated outputs are intentionally ignored by Git and are not part of the published repository surface.
+```text
+runs/<run-id>/
+  dashboard/
+    dashboard_events.jsonl
+    <project>/
+      dashboard.html
+      dashboard_plan.json
+      render_receipt.json
+      dashboard_qa_receipt.json
+      dashboard_success_receipt.json
+      data/
+        <copied source CSV files>
+```
 
-## Repository contents
+`run_manifest.json` checkpoints each stage and records route, status, timestamps, duration, model usage, tokens, cost, errors, and artifact paths. Logs never include API keys.
 
-The repository intentionally focuses on the application surface:
+## Power BI tools retained for Codex only
 
-- `analytics_workflow/` for runtime, orchestration, agents, clients, and reporting
-- `AGENTS.md` and `.codex/skills/` for project-level agent guidance and reusable support workflows
+Power BI is no longer part of the multi-agent analytics runtime. The prior `analytics_workflow.powerbi` package, feature flag, Modeling MCP runtime connection, PBIR authoring stage, Desktop Bridge stage, vision QA stage, and PBIP/PBIR outputs have been removed.
 
-Local datasets, generated reports, figures, logs, and virtual environment files are excluded from source control by default.
+The previously installed Microsoft components remain project-local for direct Codex-assisted Power BI work:
+
+- `@microsoft/powerbi-modeling-mcp@0.5.0-beta.11`
+- `@microsoft/powerbi-report-authoring-cli@0.1.4`
+- `@microsoft/powerbi-desktop-bridge-cli@0.1.2`
+- Microsoft Fabric authoring skill bundle `v0.3.7`
+
+Locations:
+
+- packages and lockfiles: `tools/powerbi/`
+- vendored skills and license: `skills/powerbi-authoring/`
+- Modeling MCP help utility: `scripts/powerbi_mcp_help.py`
+- live Desktop inspection utility: `scripts/powerbi_mcp_live_probe.py`
+
+No global Codex MCP configuration is overwritten by this repository. `tools/powerbi/mcp.runtime.json` and the upstream examples are retained as Codex/tooling references only; the Python analytics runtime does not load them.
+
+Reinstall the pinned Node packages when needed:
+
+```powershell
+cd tools\powerbi
+npm ci --ignore-scripts --no-audit --no-fund
+cd ..\..
+```
+
+The Modeling MCP package is a Microsoft preview component with preview license terms. Review `tools/powerbi/component-lock.json`, `tools/powerbi/setup_receipt.json`, packaged licenses, and the vendored skill license before direct use. Power BI Desktop preview settings and Windows compatibility matter only for direct Codex/Power BI work, not for the HTML dashboard runtime.
+
+## PowerPoint generation
+
+The report path retains the existing `PresentationBackend` abstraction:
+
+1. PowerPoint MCP when `PRESENTATION_BACKEND=auto` or `powerpoint_mcp` and the server is available;
+2. deterministic `python-pptx` fallback when MCP is unavailable or fails.
+
+The model receives structured deck specifications rather than owning geometry. The renderer controls layout, typography, spacing, chart styling, images, citations, and validation. Unsafe PowerPoint capabilities such as VBA are not exposed. Analytical slides prioritize the workflow's saved evidence figures so slide visuals remain consistent with the PDF.
+
+To force the offline Python renderer:
+
+```dotenv
+PRESENTATION_BACKEND=python
+```
+
+## Testing
+
+Run the complete suite:
+
+```powershell
+.venv311\Scripts\python.exe -m unittest discover -s tests -q
+```
+
+Run only the dashboard-path tests:
+
+```powershell
+.venv311\Scripts\python.exe -m unittest tests.test_html_dashboard_path -q
+```
+
+### Deterministic workflow benchmarks
+
+The repository includes a credential-free benchmark suite under `benchmark_suite/`. It is development and evaluation infrastructure; it does not add agents to either runtime output path.
+
+The versioned catalog contains 24 cases and expands to 30 route executions. It covers every Analytics Report and HTML Dashboard stage, route isolation, resume behavior, retries, secret redaction, agent contracts, PDF/PPTX/HTML generation, artifact QA, cross-artifact consistency, and executable anti-gaming mutations. The frozen catalog manifest is checked before the default suite runs.
+
+Output quality is scored from 0 to 100 across four independently gated dimensions:
+
+- readability: 20% weight, 70 minimum;
+- visibility: 20% weight, 70 minimum;
+- trustworthiness: 35% weight, 75 minimum;
+- executive suitability: 25% weight, 70 minimum.
+
+The weighted overall minimum is 85. A numeric score cannot compensate for a failed hard gate. Acceptance scoring requires confined, hash-bound evidence locators and structured deterministic gate receipts; bare booleans and invented evidence strings fail closed.
+
+Run the suite and write readable JSON and Markdown receipts:
+
+```powershell
+.venv311\Scripts\python.exe scripts\run_benchmark_suite.py --output-dir evals\benchmark_pilot
+```
+
+Exit codes are `0` for a passing suite, `1` when a benchmark detects a workflow failure, and `2` for a catalog or execution configuration error. Every catalog case must be recorded as pass, fail, or explicit skip. Current pilot evidence is stored in `evals/benchmark_pilot/`.
+
+Export the route-level results and improvement backlog to Excel:
+
+```powershell
+.venv311\Scripts\python.exe scripts\export_benchmark_results_excel.py evals\benchmark_pilot\benchmark_results.json --output evals\benchmark_pilot\benchmark_results.xlsx
+```
+
+The workbook contains Summary, Benchmark Results, Improvement Plan, and Catalog Coverage sheets. It is generated from the canonical JSON receipt so its status and scores cannot drift from the benchmark run.
+
+Benchmark improvement uses a bounded Codex review loop, separate from runtime: Benchmark Architect -> Workflow Evaluator -> Optimizer A -> adversarial Optimizer B. Optimizers may strengthen evaluation infrastructure and tests, but cannot weaken frozen gates or edit the production analytics workflow as part of benchmark optimization. The loop is capped at three iterations and records proposals, critiques, verdicts, catalog hashes, and semantic result fingerprints under `evals/recursive_benchmark_loop/`.
+
+Run a credentialed end-to-end smoke test:
+
+```powershell
+python -m scripts.run_full_smoke data.csv --output-path html_dashboard --context "Build a concise interactive KPI dashboard."
+```
+
+Generated datasets, dashboards, reports, figures, logs, run folders, and virtual environments are excluded from source control by default.

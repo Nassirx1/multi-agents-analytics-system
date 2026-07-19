@@ -24,7 +24,7 @@ try:
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
     from reportlab.graphics.shapes import Drawing, Line, Rect, String
-    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     REPORTLAB_AVAILABLE = True
 except ImportError:
@@ -48,7 +48,15 @@ def _stringify(value: Any) -> str:
         return soften_unsupported_impact_claim(normalize_output_text(value)).strip()
     if isinstance(value, (int, float)):
         return str(value)
-    return soften_unsupported_impact_claim(normalize_output_text(json.dumps(value, indent=2, default=str)))
+    if isinstance(value, dict):
+        return "; ".join(
+            f"{str(key).replace('_', ' ').title()}: {_stringify(item)}"
+            for key, item in value.items()
+            if _stringify(item)
+        )
+    if isinstance(value, (list, tuple, set)):
+        return "; ".join(_stringify(item) for item in value if _stringify(item))
+    return soften_unsupported_impact_claim(normalize_output_text(str(value)))
 
 
 def _safe_paragraph(text: str) -> str:
@@ -73,6 +81,113 @@ def _add_pdf_bullets(story: list[Any], items: list[str], style: Any) -> None:
         if clean:
             story.append(Paragraph(_safe_paragraph(f"- {clean}"), style))
             story.append(Spacer(1, 0.05 * inch))
+
+
+def _split_report_label(value: Any, fallback: str) -> tuple[str, str]:
+    clean = soften_unsupported_impact_claim(_stringify(value)).strip()
+    if ":" in clean:
+        label, body = clean.split(":", 1)
+        if 1 <= len(label.strip()) <= 34:
+            return label.strip(), body.strip()
+    return fallback, clean
+
+
+def _add_pdf_label_table(
+    story: list[Any],
+    items: list[str],
+    body_style: Any,
+    label_style: Any,
+    *,
+    fallback_label: str = "Note",
+) -> None:
+    rows: list[list[Any]] = []
+    for index, item in enumerate(items, start=1):
+        label, body = _split_report_label(item, f"{fallback_label} {index}")
+        if not body:
+            continue
+        rows.append(
+            [
+                Paragraph(f"<b>{_safe_paragraph(label)}</b>", label_style),
+                Paragraph(_safe_paragraph(body), body_style),
+            ]
+        )
+    if not rows:
+        return
+    table = Table(rows, colWidths=[1.28 * inch, 4.92 * inch], hAlign="LEFT")
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, -1), rl_colors.HexColor("#EAF3F8")),
+                ("BACKGROUND", (1, 0), (1, -1), rl_colors.HexColor("#F8FAFC")),
+                ("BOX", (0, 0), (-1, -1), 0.6, rl_colors.HexColor("#C9D9E4")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#DDE6EC")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    story.extend([table, Spacer(1, 0.14 * inch)])
+
+
+def _add_pdf_numbered_items(story: list[Any], items: list[str], style: Any, *, noun: str = "Step") -> None:
+    for index, item in enumerate(items, start=1):
+        clean = soften_unsupported_impact_claim(_stringify(item)).strip()
+        if not clean:
+            continue
+        label, body = _split_report_label(clean, f"{noun} {index}")
+        if label.lower().startswith(("priority", "step", "question")):
+            heading = label
+        else:
+            heading = f"{noun} {index}"
+            body = clean
+        story.append(
+            Paragraph(
+                f"<b>{_safe_paragraph(heading)}.</b> {_safe_paragraph(body)}",
+                style,
+            )
+        )
+        story.append(Spacer(1, 0.08 * inch))
+
+
+def _add_pdf_caveat_table(story: list[Any], items: list[str], style: Any, label_style: Any) -> None:
+    rows: list[list[Any]] = [
+        [
+            Paragraph('<font color="#FFFFFF"><b>Risk or assumption</b></font>', label_style),
+            Paragraph('<font color="#FFFFFF"><b>Response</b></font>', label_style),
+        ]
+    ]
+    for item in items:
+        clean = soften_unsupported_impact_claim(_stringify(item)).strip()
+        if not clean:
+            continue
+        if "Mitigation:" in clean:
+            risk, response = clean.split("Mitigation:", 1)
+        else:
+            risk, response = clean, "Validate this assumption before scaling the decision."
+        rows.append([Paragraph(_safe_paragraph(risk.strip()), style), Paragraph(_safe_paragraph(response.strip()), style)])
+    if len(rows) == 1:
+        return
+    table = Table(rows, colWidths=[3.05 * inch, 3.15 * inch], repeatRows=1, hAlign="LEFT")
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#16324F")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
+                ("BACKGROUND", (0, 1), (-1, -1), rl_colors.HexColor("#F8FAFC")),
+                ("BOX", (0, 0), (-1, -1), 0.6, rl_colors.HexColor("#C9D9E4")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#DDE6EC")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    story.extend([table, Spacer(1, 0.14 * inch)])
 
 
 def _format_objective_coverage(workflow_state: dict[str, Any]) -> list[str]:
@@ -105,6 +220,53 @@ def _format_objective_coverage(workflow_state: dict[str, Any]) -> list[str]:
     return items
 
 
+def _report_title(workflow_state: dict[str, Any]) -> str:
+    outputs = workflow_state.get("agent_outputs", {}) or {}
+    decision = outputs.get("decision_maker", {}) or {}
+    title = _stringify(decision.get("title", "")).strip()
+    if title:
+        return title
+    datasets = (workflow_state.get("evidence_bundle", {}) or {}).get("datasets", []) or []
+    name = _stringify(datasets[0].get("name", "")) if datasets else ""
+    return f"{Path(name).stem.replace('_', ' ')} Decision Report" if name else "Analytics Decision Report"
+
+
+def _report_scope_metrics(workflow_state: dict[str, Any]) -> list[tuple[str, str]]:
+    bundle = workflow_state.get("evidence_bundle", {}) or {}
+    datasets = bundle.get("datasets", []) or []
+    first = datasets[0] if datasets else {}
+    target = _stringify(workflow_state.get("decision_tree_target_column", "")) or "Not supplied"
+    quality = workflow_state.get("quality_receipt", {}) or {}
+    return [
+        ("Rows", f"{int(first.get('rows') or 0):,}" if first.get("rows") is not None else "Unknown"),
+        ("Columns", str(first.get("columns") or "Unknown")),
+        ("Target", target.replace("_", " ")),
+        ("Sharing status", _stringify(quality.get("status", "not validated")).replace("_", " ").title()),
+    ]
+
+
+def _pdf_page_decorator(title: str, *, cover: bool = False):
+    def draw(canvas: Any, doc: Any) -> None:
+        width, height = A4
+        if cover:
+            canvas.saveState()
+            canvas.setFillColor(rl_colors.HexColor("#0B2E4F"))
+            canvas.rect(0, 0, width, height, stroke=0, fill=1)
+            canvas.setFillColor(rl_colors.HexColor("#C39A3B"))
+            canvas.rect(0, 0, 18, height, stroke=0, fill=1)
+            canvas.restoreState()
+            return
+        canvas.saveState()
+        canvas.setStrokeColor(rl_colors.HexColor("#D8E1E8"))
+        canvas.line(0.7 * inch, height - 0.48 * inch, width - 0.7 * inch, height - 0.48 * inch)
+        canvas.setFillColor(rl_colors.HexColor("#526677"))
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(0.7 * inch, height - 0.36 * inch, title[:72])
+        canvas.drawRightString(width - 0.7 * inch, 0.38 * inch, f"{doc.page}")
+        canvas.restoreState()
+    return draw
+
+
 def _format_dataset_overview(data_understander: dict[str, Any]) -> str:
     datasets = data_understander.get("datasets", {})
     parts = []
@@ -134,6 +296,14 @@ def _source_index_map(market_researcher: dict[str, Any]) -> dict[int, dict[str, 
     return mapping
 
 
+def _source_display(index: int, source: dict[str, Any]) -> str:
+    bits = [str(source.get("title", "")).strip(), str(source.get("url", "")).strip()]
+    text = f"Source [{index}]: " + " - ".join(bit for bit in bits if bit)
+    if source.get("evidence_level") == "search_snippet":
+        text += " (search-snippet evidence; validate the source page before decision use)"
+    return text
+
+
 def _format_market_findings(market_researcher: dict[str, Any]) -> list[str]:
     findings: list[str] = []
     overview = market_researcher.get("industry_overview", "")
@@ -152,22 +322,20 @@ def _format_market_findings(market_researcher: dict[str, Any]) -> list[str]:
             findings.append(f"{claim} [{source_index}]")
             source = sources.get(source_index)
             if source:
-                findings.append(
-                    f"Source [{source_index}]: {source.get('title', '')} - {source.get('url', '')}"
-                )
+                findings.append(_source_display(source_index, source))
         return findings
 
     for index, trend in enumerate(market_researcher.get("key_trends", [])[:4], start=1):
         findings.append(f"{trend} [{index}]")
         source = sources.get(index)
         if source:
-            findings.append(f"Source [{index}]: {source.get('title', '')} - {source.get('url', '')}")
+                findings.append(_source_display(index, source))
 
     for index, opportunity in enumerate(market_researcher.get("opportunities", [])[:3], start=1):
         findings.append(f"{opportunity} [{index}]")
         source = sources.get(index)
         if source:
-            findings.append(f"Source [{index}]: {source.get('title', '')} - {source.get('url', '')}")
+                findings.append(_source_display(index, source))
 
     return findings
 
@@ -195,24 +363,14 @@ def _market_claim_pairs(market_researcher: dict[str, Any]) -> list[tuple[str, st
             except (TypeError, ValueError):
                 source_index = 1
             source = sources.get(source_index, {})
-            source_bits = [source.get("title", "").strip(), source.get("url", "").strip()]
-            source_text = (
-                f"Source [{source_index}]: " + " - ".join(bit for bit in source_bits if bit)
-                if any(source_bits)
-                else ""
-            )
+            source_text = _source_display(source_index, source) if source else ""
             pairs.append((f"{claim} [{source_index}]", source_text))
         return pairs
 
     fallback_items = market_researcher.get("key_trends", [])[:4] + market_researcher.get("opportunities", [])[:3]
     for index, item in enumerate(fallback_items, start=1):
         source = sources.get(index, {})
-        source_bits = [source.get("title", "").strip(), source.get("url", "").strip()]
-        source_text = (
-            f"Source [{index}]: " + " - ".join(bit for bit in source_bits if bit)
-            if any(source_bits)
-            else ""
-        )
+        source_text = _source_display(index, source) if source else ""
         pairs.append((f"{item} [{index}]", source_text))
     return pairs
 
@@ -708,7 +866,7 @@ def _pdf_decision_tree_node_label(node: dict[str, Any], is_split: bool) -> str:
 
 def _eda_model_transition_text() -> str:
     return (
-        "The EDA figures above show observed workforce patterns. The decision tree below is a separate "
+        "The EDA figures above show observed dataset patterns. The decision tree below is a separate "
         "explanatory model check: use it to audit possible follow-up segments, not as a production screening tool."
     )
 
@@ -863,6 +1021,42 @@ def _format_recommendations(recommendations: list[dict[str, Any]]) -> list[str]:
     return formatted
 
 
+def _format_executive_recommendations(recommendations: list[Any]) -> list[str]:
+    formatted: list[str] = []
+    for fallback, item in enumerate(recommendations[:4], start=1):
+        if not isinstance(item, dict):
+            text = _stringify(item)
+            if text:
+                formatted.append(text)
+            continue
+        rank = item.get("rank") or fallback
+        action = _short_report_text(item.get("action"), 260)
+        owner = _short_report_text(item.get("owner"), 90)
+        timeline = _short_report_text(item.get("timeline"), 80)
+        metric = _short_report_text(item.get("validation_metric"), 150)
+        stop = _short_report_text(item.get("stop_condition"), 150)
+        evidence_ids = ", ".join(str(value) for value in item.get("evidence_ids", []) or [] if value)
+        parts = [f"Priority {rank}: {action}"]
+        if owner or timeline:
+            parts.append(f"Owner/timing: {owner or 'named owner'}; {timeline or 'validation cycle'}")
+        if evidence_ids:
+            parts.append(f"Evidence: {evidence_ids}")
+        if metric:
+            parts.append(f"Measure: {metric}")
+        if stop:
+            parts.append(f"Stop condition: {stop}")
+        formatted.append(". ".join(part.rstrip(".") for part in parts if part) + ".")
+    return formatted
+
+
+def _short_report_text(value: Any, limit: int) -> str:
+    text = _stringify(value).strip()
+    if len(text) <= limit:
+        return text
+    trimmed = text[: limit + 1].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return trimmed + "."
+
+
 def _recommendation_owner(action: Any, evidence: Any) -> str:
     text = f"{_stringify(action)} {_stringify(evidence)}".lower()
     if any(token in text for token in ("stock", "price", "volatility", "drawdown", "return", "volume", "hedg")):
@@ -932,7 +1126,15 @@ def _format_executive_decision_block(workflow_state: dict[str, Any]) -> list[str
     ]
     evidence = _stringify((artifacts[0].get("finding") or artifacts[0].get("takeaway") or artifacts[0].get("title")) if artifacts else "")
     caveat = _format_limitations(workflow_state)[0]
-    target = _stringify(workflow_state.get("decision_tree_target_column", ""))
+    target = _stringify(workflow_state.get("decision_tree_target_column", "")).replace("_", " ")
+    if bool((workflow_state.get("evidence_bundle", {}) or {}).get("high_stakes")):
+        return [
+            f"Decision: {decision_text or 'Use the findings only to design a professionally supervised validation study.'}",
+            f"Population: records in the supplied dataset related to {target or 'the stated outcome'}; broader representativeness is not established.",
+            f"Evidence: {evidence or 'Use the cited EDA artifacts and exploratory model branches as hypothesis-generating evidence.'}",
+            "Validation: report class-sensitive metrics, subgroup stability, fairness, safety, and expert-reviewed outcomes on fresh data.",
+            "Boundary: no diagnosis, eligibility, automated adverse action, or high-impact decision without domain-expert and human review.",
+        ]
     if _is_lending_report_context(workflow_state):
         return [
             f"Decision: {decision_text or 'Run bounded underwriting and portfolio-monitoring validation pilots before policy changes.'}",
@@ -1075,11 +1277,16 @@ def _format_data_quality_notes(data_understander: dict[str, Any]) -> list[str]:
             if text:
                 notes.append(f"{dataset_name}: {text}")
             continue
+        labels = {
+            "cleaning_priorities": "Cleaning priority",
+            "type_notes": "Field interpretation",
+            "outlier_notes": "Range and outlier check",
+        }
         for key in ("cleaning_priorities", "type_notes", "outlier_notes"):
             for note in dataset_info.get(key, [])[:2]:
                 text = _stringify(note)
                 if text:
-                    notes.append(f"{dataset_name}: {text}")
+                    notes.append(f"{labels[key]}: {text}")
     return notes or ["No material data-quality notes were recorded by the data understanding step."]
 
 
@@ -1287,6 +1494,8 @@ def _report_outline_payload(workflow_state: dict[str, Any], report_path: str) ->
     return {
         "artifact_type": "report_outline",
         "report_path": report_path,
+        "evidence_bundle_hash": (workflow_state.get("evidence_bundle", {}) or {}).get("bundle_hash", ""),
+        "quality_status": (workflow_state.get("quality_receipt", {}) or {}).get("status", ""),
         "generated_on": datetime.now().isoformat(timespec="seconds"),
         "objective_coverage": _format_objective_coverage(workflow_state),
         "sections": sections,
@@ -1314,52 +1523,87 @@ def generate_pdf_report(workflow_state: dict[str, Any], output_path: str = "anal
     resolved_output_path = _preferred_output_path(output_path)
     if REPORTLAB_AVAILABLE:
         styles = getSampleStyleSheet()
-        styles.add(ParagraphStyle(name="ReportTitle", parent=styles["Title"], textColor=rl_colors.HexColor("#16324F")))
-        styles.add(ParagraphStyle(name="ReportHeading", parent=styles["Heading2"], textColor=rl_colors.HexColor("#16324F"), spaceBefore=12))
-        styles.add(ParagraphStyle(name="ReportFigureHeading", parent=styles["Heading3"], textColor=rl_colors.HexColor("#234A68"), spaceBefore=8, spaceAfter=4))
-        styles.add(ParagraphStyle(name="ReportBody", parent=styles["BodyText"], leading=15, spaceAfter=6))
-        styles.add(ParagraphStyle(name="ReportCaption", parent=styles["BodyText"], textColor=rl_colors.HexColor("#5B6570"), fontSize=9, italic=True))
+        report_title = _report_title(workflow_state)
+        styles.add(ParagraphStyle(name="CoverKicker", parent=styles["Normal"], textColor=rl_colors.HexColor("#D9E7F2"), fontSize=9, leading=12, spaceAfter=18))
+        styles.add(ParagraphStyle(name="CoverTitle", parent=styles["Title"], textColor=rl_colors.white, fontName="Helvetica-Bold", fontSize=26, leading=31, alignment=0, spaceAfter=18))
+        styles.add(ParagraphStyle(name="CoverSub", parent=styles["BodyText"], textColor=rl_colors.HexColor("#D9E7F2"), fontSize=11, leading=16, spaceAfter=8))
+        styles.add(ParagraphStyle(name="ReportHeading", parent=styles["Heading2"], textColor=rl_colors.HexColor("#16324F"), fontName="Helvetica-Bold", fontSize=16, leading=20, spaceBefore=12, spaceAfter=8))
+        styles.add(ParagraphStyle(name="ReportFigureHeading", parent=styles["Heading3"], textColor=rl_colors.HexColor("#234A68"), fontName="Helvetica-Bold", fontSize=11, leading=14, spaceBefore=8, spaceAfter=5))
+        styles.add(ParagraphStyle(name="ReportBody", parent=styles["BodyText"], textColor=rl_colors.HexColor("#243B53"), fontSize=10, leading=14, spaceAfter=6))
+        styles.add(ParagraphStyle(name="ReportCaption", parent=styles["BodyText"], textColor=rl_colors.HexColor("#5B6570"), fontSize=8.5, leading=11, italic=True))
+        styles.add(ParagraphStyle(name="EvidenceNote", parent=styles["BodyText"], backColor=rl_colors.HexColor("#EAF3F8"), borderColor=rl_colors.HexColor("#C9D9E4"), borderWidth=0.6, borderPadding=7, textColor=rl_colors.HexColor("#29485F"), fontSize=9, leading=12, spaceBefore=4, spaceAfter=8))
 
-        story: list[Any] = [Paragraph("Multi-Agent Analytics Report", styles["ReportTitle"]), Spacer(1, 0.15 * inch)]
-        story.append(Paragraph(datetime.now().strftime("%B %d, %Y"), styles["Normal"]))
-        story.append(Spacer(1, 0.2 * inch))
+        story: list[Any] = [Spacer(1, 1.05 * inch)]
+        story.append(Paragraph("MULTI-AGENT ANALYTICS SYSTEM", styles["CoverKicker"]))
+        story.append(Paragraph(_safe_paragraph(report_title), styles["CoverTitle"]))
+        story.append(Spacer(1, 0.18 * inch))
+        story.append(Paragraph("Executive decision report", styles["CoverSub"]))
+        if user_description:
+            story.append(Paragraph(_safe_paragraph(user_description), styles["CoverSub"]))
+        story.append(Spacer(1, 2.75 * inch))
+        story.append(Paragraph(datetime.now().strftime("%B %d, %Y"), styles["CoverSub"]))
+        story.append(PageBreak())
 
         _add_pdf_heading(story, "Executive Summary", styles["ReportHeading"])
-        _add_pdf_bullets(story, _format_executive_decision_block(workflow_state), styles["ReportBody"])
-        if user_description:
-            _add_pdf_body(story, f"User context: {user_description}", styles["ReportBody"])
-        _add_pdf_body(story, outputs.get("decision_maker", {}).get("executive_summary", ""), styles["ReportBody"])
-        _add_pdf_body(story, outputs.get("decision_maker", {}).get("decision_context", ""), styles["ReportBody"])
+        _add_pdf_label_table(
+            story,
+            _format_executive_decision_block(workflow_state)[:5],
+            styles["ReportBody"],
+            styles["ReportCaption"],
+            fallback_label="Summary",
+        )
+        decision_output = outputs.get("decision_maker", {}) or {}
+        if bool((workflow_state.get("evidence_bundle", {}) or {}).get("high_stakes")):
+            summary = _stringify(decision_output.get("conclusion", ""))
+        else:
+            summary = _stringify(decision_output.get("executive_summary", ""))
+        if summary:
+            _add_pdf_body(story, summary, styles["ReportBody"])
 
-        _add_pdf_heading(story, "Objective Coverage", styles["ReportHeading"])
-        _add_pdf_bullets(story, _format_objective_coverage(workflow_state), styles["ReportBody"])
+        scope_rows = [[Paragraph(f"<b>{_safe_paragraph(label)}</b>", styles["ReportCaption"]), Paragraph(_safe_paragraph(value), styles["ReportBody"])] for label, value in _report_scope_metrics(workflow_state)]
+        scope_table = Table(scope_rows, colWidths=[1.45 * inch, 4.75 * inch])
+        scope_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), rl_colors.HexColor("#F3F7FA")),
+            ("BOX", (0, 0), (-1, -1), 0.6, rl_colors.HexColor("#D3DFE7")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#DDE6EC")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.extend([scope_table, Spacer(1, 0.14 * inch)])
 
-        _add_pdf_heading(story, "Dataset Overview / Data Understanding", styles["ReportHeading"])
+        required_caveats = (workflow_state.get("quality_receipt", {}) or {}).get("required_caveats", []) or []
+        if required_caveats:
+            story.append(Paragraph(_safe_paragraph("Decision boundary: " + " ".join(required_caveats[:2])), styles["EvidenceNote"]))
+
+        _add_pdf_heading(story, "What the data can support", styles["ReportHeading"])
         _add_pdf_body(story, outputs.get("data_understander", {}).get("executive_summary", ""), styles["ReportBody"])
-        _add_pdf_body(story, _format_dataset_overview(outputs.get("data_understander", {})), styles["ReportBody"])
+        _add_pdf_label_table(
+            story,
+            _format_data_quality_notes(outputs.get("data_understander", {}))[:5],
+            styles["ReportBody"],
+            styles["ReportCaption"],
+            fallback_label="Quality check",
+        )
 
-        _add_pdf_heading(story, "Market Research", styles["ReportHeading"])
-        market_research = outputs.get("market_researcher", {})
-        _add_pdf_body(story, market_research.get("industry_overview", ""), styles["ReportBody"])
-        for claim, source_text in _market_claim_pairs(market_research):
-            story.append(Paragraph(_safe_paragraph(f"- {claim}"), styles["ReportBody"]))
-            if source_text:
-                story.append(Paragraph(_safe_paragraph(source_text), styles["ReportCaption"]))
-            story.append(Spacer(1, 0.05 * inch))
-
-        _add_pdf_heading(story, "Analysis Plan", styles["ReportHeading"])
-        _add_pdf_bullets(story, outputs.get("planner", {}).get("objectives", []), styles["ReportBody"])
-        _add_pdf_bullets(story, outputs.get("planner", {}).get("statistical_methods", []), styles["ReportBody"])
-
-        _add_pdf_heading(story, "Data Quality Notes", styles["ReportHeading"])
-        _add_pdf_bullets(story, _format_data_quality_notes(outputs.get("data_understander", {})), styles["ReportBody"])
-
-        _add_pdf_heading(story, "Data Analysis and Visual Findings", styles["ReportHeading"])
-        _add_pdf_bullets(story, _format_analysis_findings(analysis_results), styles["ReportBody"])
-        top_signals = _format_top_risk_signals(analysis_results)
-        if top_signals:
-            _add_pdf_heading(story, "Top Risk Signals", styles["ReportFigureHeading"])
-            _add_pdf_bullets(story, top_signals, styles["ReportBody"])
+        _add_pdf_heading(story, "Key findings with visual evidence", styles["ReportHeading"])
+        evidence_records = (workflow_state.get("evidence_bundle", {}) or {}).get("evidence", []) or []
+        if not evidence_records:
+            _add_pdf_numbered_items(story, _format_analysis_findings(analysis_results)[:6], styles["ReportBody"], noun="Finding")
+        for evidence_index, item in enumerate(evidence_records, start=1):
+            if not isinstance(item, dict) or item.get("kind") == "model":
+                continue
+            claim = _stringify(item.get("claim", ""))
+            if claim:
+                context_bits = []
+                if item.get("sample_size"):
+                    context_bits.append(f"n={item.get('sample_size')}")
+                if item.get("method"):
+                    context_bits.append(str(item.get("method")))
+                context = f" ({'; '.join(context_bits)})" if context_bits else ""
+                story.append(Paragraph(f"<b>[E{evidence_index}]</b> {_safe_paragraph(claim + context)}", styles["ReportBody"]))
         for figure in _report_figures(workflow_state):
             caption = _figure_caption_for(figure, analysis_results.get("figure_captions", {}))
             if os.path.exists(figure):
@@ -1367,47 +1611,105 @@ def generate_pdf_report(workflow_state: dict[str, Any], output_path: str = "anal
 
                 figure_title = _title_from_caption(caption, Path(figure).stem)
                 image_width, image_height = _fit_image_size(figure, 6.2 * inch, 3.6 * inch)
-                story.append(Paragraph(_safe_paragraph(f"Visual evidence: {figure_title}"), styles["ReportFigureHeading"]))
-                story.append(RLImage(figure, width=image_width, height=image_height))
+                figure_group: list[Any] = [Paragraph(_safe_paragraph(figure_title), styles["ReportFigureHeading"]), RLImage(figure, width=image_width, height=image_height)]
                 if caption:
-                    story.append(Paragraph(_safe_paragraph(f"Figure note: {caption}"), styles["ReportCaption"]))
-                story.append(Spacer(1, 0.12 * inch))
+                    figure_group.append(Paragraph(_safe_paragraph(caption), styles["ReportCaption"]))
+                figure_group.append(Spacer(1, 0.12 * inch))
+                story.append(KeepTogether(figure_group))
         tree_artifacts = _decision_tree_artifacts(analysis_results)
         if tree_artifacts:
             story.append(PageBreak())
-            _add_pdf_body(story, _eda_model_transition_text(), styles["ReportBody"])
-            _add_pdf_heading(story, "Decision Tree Model", styles["ReportHeading"])
+            _add_pdf_heading(story, "Exploratory model check", styles["ReportHeading"])
+            _add_pdf_body(story, _eda_model_transition_text(), styles["EvidenceNote"])
         for tree_artifact in tree_artifacts[:1]:
             _add_pdf_decision_tree_diagram(story, tree_artifact, styles)
 
-        _add_pdf_heading(story, "Business Translation", styles["ReportHeading"])
-        _add_pdf_body(story, outputs.get("business_translator", {}).get("executive_summary", ""), styles["ReportBody"])
-        _add_pdf_body(story, outputs.get("business_translator", {}).get("business_narrative", ""), styles["ReportBody"])
-        _add_pdf_bullets(story, _format_priority_findings(outputs.get("business_translator", {})), styles["ReportBody"])
-        _add_pdf_bullets(story, outputs.get("business_translator", {}).get("opportunities", []), styles["ReportBody"])
-        _add_pdf_bullets(story, outputs.get("business_translator", {}).get("risks", []), styles["ReportBody"])
-
-        _add_pdf_heading(story, "Decision Recommendations", styles["ReportHeading"])
+        _add_pdf_heading(story, "Recommended next steps", styles["ReportHeading"])
         _add_pdf_body(story, outputs.get("decision_maker", {}).get("final_recommendation", ""), styles["ReportBody"])
-        _add_pdf_bullets(story, _format_recommendations(outputs.get("decision_maker", {}).get("recommendations", [])), styles["ReportBody"])
-        _add_pdf_body(story, outputs.get("decision_maker", {}).get("conclusion", ""), styles["ReportBody"])
+        _add_pdf_numbered_items(
+            story,
+            _format_executive_recommendations(outputs.get("decision_maker", {}).get("recommendations", [])),
+            styles["ReportBody"],
+            noun="Priority",
+        )
 
-        _add_pdf_heading(story, "Limitations and Validation Steps", styles["ReportHeading"])
-        _add_pdf_bullets(story, _format_limitations(workflow_state), styles["ReportBody"])
+        _add_pdf_heading(story, "Further questions before scaling", styles["ReportHeading"])
+        _add_pdf_numbered_items(
+            story,
+            [
+                "Do the observed patterns hold in a fresh and appropriately sampled dataset?",
+                "Which operational owner, safety guardrail, and success metric will govern the validation study?",
+                "Do results remain stable across relevant subgroups and under class-sensitive evaluation?",
+            ],
+            styles["ReportBody"],
+            noun="Question",
+        )
 
-        _add_pdf_heading(story, "Appendix / Sources", styles["ReportHeading"])
-        appendix_items = []
-        for index, source in sorted(_source_index_map(outputs.get("market_researcher", {})).items()):
-            appendix_items.append(f"[{index}] {source.get('title', '')} - {source.get('url', '')}")
+        _add_pdf_heading(story, "Caveats and assumptions", styles["ReportHeading"])
+        _add_pdf_caveat_table(
+            story,
+            _format_limitations(workflow_state),
+            styles["ReportBody"],
+            styles["ReportCaption"],
+        )
+
+        _add_pdf_heading(story, "Sources and reproducibility", styles["ReportHeading"])
+        appendix_items: list[str] = []
+        for source in (workflow_state.get("evidence_bundle", {}) or {}).get("datasets", []) or []:
+            appendix_items.append(
+                f"Dataset: {source.get('name', '')}; rows={source.get('rows', 'unknown')}; columns={source.get('columns', 'unknown')}; SHA-256={source.get('sha256') or 'not recorded'}."
+                + (f" As of {source.get('as_of')}." if source.get("as_of") else "")
+            )
+        external_sources = (workflow_state.get("evidence_bundle", {}) or {}).get("external_sources", []) or []
+        if external_sources:
+            external_inventory: list[str] = []
+            for source in external_sources:
+                url = str(source.get("url") or "")
+                domain_match = re.search(r"https?://(?:www\.)?([^/]+)", url)
+                domain = domain_match.group(1) if domain_match else url
+                external_inventory.append(
+                    f"[{source.get('index')}] {source.get('title', '')} ({domain or 'source page'})"
+                )
+            appendix_items.append(
+                "External context: "
+                + "; ".join(external_inventory)
+                + ". Search snippets are context only until the source pages are reviewed."
+            )
         if not appendix_items:
-            appendix_items = ["No external sources were captured for this run."]
-        _add_pdf_bullets(story, appendix_items, styles["ReportBody"])
-        if not _source_index_map(outputs.get("market_researcher", {})):
-            _add_pdf_bullets(story, _format_workflow_trace(workflow_state), styles["ReportCaption"])
+            appendix_items = ["No external sources were captured; conclusions rely on the supplied dataset and saved analysis artifacts."]
+        _add_pdf_label_table(
+            story,
+            appendix_items,
+            styles["ReportBody"],
+            styles["ReportCaption"],
+            fallback_label="Source",
+        )
+        if not external_sources:
+            _add_pdf_body(story, " ".join(_format_workflow_trace(workflow_state)), styles["ReportCaption"])
 
-        doc = SimpleDocTemplate(resolved_output_path, pagesize=A4, rightMargin=0.7 * inch, leftMargin=0.7 * inch)
+        doc = SimpleDocTemplate(
+            resolved_output_path,
+            pagesize=A4,
+            rightMargin=0.72 * inch,
+            leftMargin=0.72 * inch,
+            topMargin=0.68 * inch,
+            bottomMargin=0.62 * inch,
+            title=report_title,
+            author="Multi-Agent Analytics System",
+        )
         _trim_trailing_spacers_and_pagebreaks(story)
-        doc.build(story)
+        doc.build(
+            story,
+            onFirstPage=_pdf_page_decorator(report_title, cover=True),
+            onLaterPages=_pdf_page_decorator(report_title),
+        )
+        pdf_qa = inspect_pdf_report(resolved_output_path)
+        workflow_state["pdf_quality_receipt"] = pdf_qa
+        if any(issue.get("severity") == "error" for issue in pdf_qa.get("issues", [])):
+            raise RuntimeError(
+                "PDF semantic QA failed: "
+                + "; ".join(str(issue.get("issue")) for issue in pdf_qa["issues"][:8])
+            )
         outline_path = _write_json_artifact(
             resolved_output_path,
             "report_outline.json",
@@ -1500,7 +1802,55 @@ def _trim_trailing_spacers_and_pagebreaks(story: list[Any]) -> None:
         story.pop()
 
 
-def generate_slide_deck(workflow_state: dict[str, Any], output_path: str = "analytics_report.pptx") -> str:
+def inspect_pdf_report(path: str) -> dict[str, Any]:
+    """Run deterministic semantic/readability checks on the final PDF when PyMuPDF is available."""
+    result: dict[str, Any] = {"path": str(Path(path).resolve()), "page_count": 0, "issues": [], "valid": True}
+    pdf_path = Path(path)
+    if not pdf_path.is_file() or pdf_path.stat().st_size < 1000:
+        result["issues"].append({"issue": "pdf_missing_or_empty", "severity": "error"})
+        result["valid"] = False
+        return result
+    try:
+        import fitz  # type: ignore
+    except ImportError:
+        result["issues"].append({"issue": "rendered_pdf_qa_unavailable", "severity": "warning"})
+        return result
+    try:
+        document = fitz.open(str(pdf_path))
+    except Exception as exc:
+        result["issues"].append({"issue": "pdf_cannot_open", "severity": "error", "detail": str(exc)})
+        result["valid"] = False
+        return result
+    result["page_count"] = len(document)
+    all_text: list[str] = []
+    for index, page in enumerate(document, start=1):
+        text = " ".join(page.get_text("text").split())
+        all_text.append(text)
+        if index > 1 and len(text) > 3200:
+            result["issues"].append(
+                {"page": index, "issue": "excessive_text_density", "characters": len(text), "severity": "warning"}
+            )
+        if index > 1 and len(text) < 45 and not page.get_images(full=True):
+            result["issues"].append({"page": index, "issue": "nearly_empty_page", "severity": "warning"})
+    combined = "\n".join(all_text)
+    semantic_errors = {
+        "raw_json_in_reader_text": bool(re.search(r"\{\s*[\"']?[A-Za-z_]+[\"']?\s*:", combined)),
+        "wrong_domain_workforce_text": "observed workforce patterns" in combined.lower(),
+        "unrenderable_cjk_or_language_mismatch": bool(re.search(r"[\u3400-\u9fff]", combined)),
+    }
+    for issue, present in semantic_errors.items():
+        if present:
+            result["issues"].append({"issue": issue, "severity": "error"})
+    result["valid"] = not any(item.get("severity") == "error" for item in result["issues"])
+    return result
+
+
+def generate_slide_deck(
+    workflow_state: dict[str, Any],
+    output_path: str = "analytics_report.pptx",
+    *,
+    runtime_config: Any | None = None,
+) -> str:
     from .deck_rendering import build_consulting_deck
 
-    return build_consulting_deck(workflow_state, output_path)
+    return build_consulting_deck(workflow_state, output_path, runtime_config=runtime_config)

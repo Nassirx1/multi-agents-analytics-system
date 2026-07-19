@@ -1,0 +1,23 @@
+[project]
+name = "multi-agent-analytics-workflow"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["runs", "evals", "local_restore_backups", ".venv*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.coverage.run]
+branch = true
+source = ["analytics_workflow"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 55

@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install coverage ruff
+      - name: Static checks
+        run: python -m ruff check --select E9,F63,F7,F82 analytics_workflow tests scripts
+      - name: Unit tests with coverage
+        run: python -m coverage run -m unittest discover -s tests -q
+      - name: Coverage gate
+        run: python -m coverage report

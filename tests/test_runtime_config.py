@@ -2,6 +2,7 @@ import logging
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import analytics_workflow.cli as cli
@@ -26,6 +27,25 @@ class RuntimeConfigTests(unittest.TestCase):
     def test_blank_model_override_uses_default(self) -> None:
         config = build_runtime_config("openrouter-secret", "brave-secret", "   ")
         self.assertEqual(config.model_name, DEFAULT_MODEL)
+
+    def test_role_specific_models_default_and_can_be_overridden(self) -> None:
+        defaulted = build_runtime_config("openrouter-secret", "brave-secret", "model-base")
+        self.assertEqual(defaulted.structured_model_name, "model-base")
+        self.assertEqual(defaulted.code_model_name, "model-base")
+        self.assertEqual(defaulted.presentation_model_name, "model-base")
+        self.assertTrue(defaulted.market_research_enabled)
+        self.assertFalse(defaulted.presentation_architect_enabled)
+        routed = build_runtime_config(
+            "openrouter-secret",
+            "brave-secret",
+            "model-base",
+            structured_model_name="model-fast",
+            code_model_name="model-code",
+            presentation_model_name="model-slides",
+        )
+        self.assertEqual(routed.structured_model_name, "model-fast")
+        self.assertEqual(routed.code_model_name, "model-code")
+        self.assertEqual(routed.presentation_model_name, "model-slides")
 
     def test_headers_use_expected_authentication_shape(self) -> None:
         config = build_runtime_config("openrouter-secret", "brave-secret", "model-x")
@@ -56,6 +76,14 @@ class RuntimeConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_runtime_config("openrouter-secret", "")
 
+    def test_presentation_backend_is_validated(self) -> None:
+        self.assertEqual(
+            build_runtime_config("openrouter", "brave", presentation_backend="POWERPOINT_MCP").presentation_backend,
+            "powerpoint_mcp",
+        )
+        with self.assertRaisesRegex(ValueError, "PRESENTATION_BACKEND"):
+            build_runtime_config("openrouter", "brave", presentation_backend="unknown")
+
     def test_load_runtime_config_reads_environment_keys_and_default_model(self) -> None:
         with patch.dict(
             os.environ,
@@ -63,6 +91,9 @@ class RuntimeConfigTests(unittest.TestCase):
                 "OPENROUTER_API_KEY": "openrouter-env-secret",
                 "BRAVE_API_KEY": "brave-env-secret",
                 "ANALYTICS_MODEL": "model-from-env",
+                "PRESENTATION_BACKEND": "python",
+                "POWERPOINT_MCP_COMMAND": "custom-mcp-ppt",
+                "PRESENTATION_AGENT_TIMEOUT_SECONDS": "901",
             },
             clear=False,
         ):
@@ -71,6 +102,9 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(config.openrouter_api_key, "openrouter-env-secret")
         self.assertEqual(config.brave_search_api_key, "brave-env-secret")
         self.assertEqual(config.model_name, "model-from-env")
+        self.assertEqual(config.presentation_backend, "python")
+        self.assertEqual(config.powerpoint_mcp_command, "custom-mcp-ppt")
+        self.assertEqual(config.presentation_agent_timeout_seconds, 901)
 
     def test_load_runtime_config_reports_missing_env_keys(self) -> None:
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "BRAVE_API_KEY": ""}, clear=False), patch(
@@ -79,48 +113,52 @@ class RuntimeConfigTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 ValueError,
-                r"^Missing OPENROUTER_API_KEY\. Set it in the environment, add it to \.env, or enter it at the CLI prompt\.$",
+                r"^Missing OPENROUTER_API_KEY\. Set it in the process, user, or machine environment, or project \.env\.$",
             ):
                 load_runtime_config()
 
-    def test_prompt_runtime_config_reads_project_env_before_prompting(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            env_path = os.path.join(temp_dir, ".env")
-            with open(env_path, "w", encoding="utf-8") as handle:
-                handle.write("OPENROUTER_API_KEY=openrouter-dotenv-secret\n")
-                handle.write("BRAVE_API_KEY=brave-dotenv-secret\n")
-                handle.write("ANALYTICS_MODEL=model-from-dotenv\n")
+    def test_load_runtime_config_reads_project_env_credentials_without_prompting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(
+                "OPENROUTER_API_KEY=openrouter-file-secret\nBRAVE_API_KEY=brave-file-secret\n",
+                encoding="utf-8",
+            )
             with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "BRAVE_API_KEY": ""}, clear=False), patch(
                 "analytics_workflow.runtime_config.PROJECT_ENV_PATH",
-                PROJECT_ENV_PATH.__class__(env_path),
+                env_path,
             ):
-                config = prompt_runtime_config(
-                    input_fn=lambda _: "",
-                    secret_input_fn=lambda _: self.fail("prompt should not be called"),
-                )
+                config = load_runtime_config()
 
-        self.assertEqual(config.openrouter_api_key, "openrouter-dotenv-secret")
-        self.assertEqual(config.brave_search_api_key, "brave-dotenv-secret")
-        self.assertEqual(config.model_name, "model-from-dotenv")
+        self.assertEqual(config.openrouter_api_key, "openrouter-file-secret")
+        self.assertEqual(config.brave_search_api_key, "brave-file-secret")
 
-    def test_prompt_runtime_config_prompts_for_missing_keys_without_dotenv(self) -> None:
-        prompts = iter(["openrouter-prompt-secret", "brave-prompt-secret"])
+    def test_prompt_runtime_config_is_environment_only_compatibility_alias(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"OPENROUTER_API_KEY": "openrouter-env-secret", "BRAVE_API_KEY": "brave-env-secret"},
+            clear=False,
+        ):
+            config = prompt_runtime_config(
+                input_fn=lambda _: (_ for _ in ()).throw(AssertionError("input must not be called")),
+                secret_input_fn=lambda _: (_ for _ in ()).throw(AssertionError("secret input must not be called")),
+            )
+        self.assertEqual(config.openrouter_api_key, "openrouter-env-secret")
+        self.assertEqual(config.brave_search_api_key, "brave-env-secret")
+
+    def test_prompt_runtime_config_never_falls_back_to_prompting(self) -> None:
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "BRAVE_API_KEY": ""}, clear=False), patch(
             "analytics_workflow.runtime_config.PROJECT_ENV_PATH",
             PROJECT_ENV_PATH.with_name("missing-test.env"),
         ):
-            config = prompt_runtime_config(
-                input_fn=lambda _: "",
-                secret_input_fn=lambda _: next(prompts),
-            )
-
-        self.assertEqual(config.openrouter_api_key, "openrouter-prompt-secret")
-        self.assertEqual(config.brave_search_api_key, "brave-prompt-secret")
-        self.assertEqual(config.model_name, DEFAULT_MODEL)
+            with self.assertRaisesRegex(ValueError, "Missing OPENROUTER_API_KEY"):
+                prompt_runtime_config(secret_input_fn=lambda _: "must-not-be-used")
 
     def test_cli_registers_runtime_config_before_running_workflow(self) -> None:
         config = build_runtime_config("openrouter-secret", "brave-secret", "model-x")
-        with patch.object(cli, "prompt_runtime_config", return_value=config), patch.object(
+        with patch.object(cli, "prompt_output_path", return_value=cli.OutputPath.ANALYTICS_REPORT), patch.object(
+            cli, "load_runtime_config", return_value=config
+        ), patch.object(
             cli, "run_terminal_workflow", return_value=0
         ) as run_workflow, patch.object(cli, "setup_logging") as setup_logging:
             result = cli.main()
@@ -131,9 +169,9 @@ class RuntimeConfigTests(unittest.TestCase):
         run_workflow.assert_called_once()
 
     def test_cli_stops_before_workflow_when_config_is_missing(self) -> None:
-        with patch.object(
+        with patch.object(cli, "prompt_output_path", return_value=cli.OutputPath.ANALYTICS_REPORT), patch.object(
             cli,
-            "prompt_runtime_config",
+            "load_runtime_config",
             side_effect=ValueError("Brave Search API key is required."),
         ), patch.object(cli, "run_terminal_workflow") as run_workflow, patch(
             "builtins.print"

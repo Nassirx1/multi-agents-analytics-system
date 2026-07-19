@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import ast
 import builtins
+from concurrent.futures import ThreadPoolExecutor
 import difflib
+import hashlib
 import importlib.util
+import json
 import logging
 import os
+import pickle
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 import traceback
+import uuid
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +57,12 @@ from .decision_tree_figure import (
     decision_tree_underperforms_baseline,
     render_decision_tree_rules_figure,
 )
+from .evidence import (
+    artifact_dependency_hash,
+    build_evidence_bundle,
+    normalize_analysis_evidence,
+    validate_and_sanitize_workflow,
+)
 from .reporting import (
     PPTX_AVAILABLE,
     REPORTLAB_AVAILABLE,
@@ -64,9 +79,11 @@ from .reporting import (
     generate_pdf_report,
     generate_slide_deck,
 )
-from .runtime_config import RuntimeConfig
+from .runtime_config import RuntimeConfig, register_runtime_config
+from .output_paths import OutputPath, coerce_output_path
+from .run_checkpoints import load_run_checkpoint
 from .serialization import json_dumps_safe, make_json_safe
-from .workflow_steps import WORKFLOW_STEPS, format_step_update
+from .workflow_steps import WORKFLOW_STEPS, format_step_update, workflow_steps_for
 
 warnings.filterwarnings("ignore")
 plt.style.use("seaborn-v0_8")
@@ -180,22 +197,77 @@ SAFE_BUILTINS = {
 
 
 class MultiAgentOrchestrator:
-    def __init__(self, config: RuntimeConfig, step_callback: StepCallback | None = None) -> None:
-        self.openrouter_client = OpenRouterClient(config.openrouter_api_key, config.model_name)
-        self.brave_client = BraveSearchClient(config.brave_search_api_key) if config.brave_search_api_key else None
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        step_callback: StepCallback | None = None,
+        *,
+        workspace: Path | None = None,
+        create_run_directory: bool = True,
+        output_path: OutputPath | str = OutputPath.ANALYTICS_REPORT,
+    ) -> None:
+        self.config = config
+        self.output_path = coerce_output_path(output_path)
+        self.workflow_steps = workflow_steps_for(self.output_path)
+        self.openrouter_client = OpenRouterClient(
+            config.openrouter_api_key,
+            config.structured_model_name or config.model_name,
+            request_timeout_seconds=config.agent_request_timeout_seconds,
+            code_loop_timeout_seconds=config.code_loop_request_timeout_seconds,
+        )
+        shared_cost_tracker = self.openrouter_client.cost_tracker
+        self.code_openrouter_client = OpenRouterClient(
+            config.openrouter_api_key,
+            config.code_model_name or config.model_name,
+            request_timeout_seconds=config.agent_request_timeout_seconds,
+            code_loop_timeout_seconds=config.code_loop_request_timeout_seconds,
+            cost_tracker=shared_cost_tracker,
+        )
+        self.presentation_openrouter_client = OpenRouterClient(
+            config.openrouter_api_key,
+            config.presentation_model_name or config.model_name,
+            request_timeout_seconds=config.agent_request_timeout_seconds,
+            code_loop_timeout_seconds=config.code_loop_request_timeout_seconds,
+            cost_tracker=shared_cost_tracker,
+        )
+        self.brave_client = (
+            BraveSearchClient(config.brave_search_api_key)
+            if self.output_path is OutputPath.ANALYTICS_REPORT and config.brave_search_api_key
+            else None
+        )
         self.shared_store = SharedContextStore()
         self.step_callback = step_callback
+        self.workspace = Path(workspace).resolve() if workspace else None
+        self.run_id = datetime.now().strftime("%Y%m%dT%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
+        self.run_dir: Path | None = None
+        self._checkpoint_lock = threading.RLock()
+        self._step_started: dict[int, tuple[float, dict[str, Any], str]] = {}
+        if self.workspace is not None and create_run_directory:
+            self.run_dir = self.workspace / "runs" / self.run_id
+            self.run_dir.mkdir(parents=True, exist_ok=False)
         kwargs = {"openrouter_client": self.openrouter_client, "shared_store": self.shared_store}
+        code_kwargs = {"openrouter_client": self.code_openrouter_client, "shared_store": self.shared_store}
+        presentation_kwargs = {
+            "openrouter_client": self.presentation_openrouter_client,
+            "shared_store": self.shared_store,
+        }
         self.agents: dict[str, BaseAgent] = {
             "data_understander": DataUnderstanderAgent("Data Understander", "Senior Data Analyst", "data profiling", **kwargs),
-            "market_researcher": MarketResearcherAgent("Market Researcher", "Market Research Specialist", "market trends", brave_client=self.brave_client, **kwargs),
-            "planner": PlannerAgent("Analysis Planner", "Senior Data Strategist", "analysis planning", **kwargs),
-            "coder": DataScientistCoderAgent("Data Scientist Coder", "Senior Data Scientist", "python analytics", **kwargs),
-            "reviewer": DataScientistReviewerAgent("Code Reviewer", "Senior Reviewer", "debugging and analytical review", **kwargs),
-            "business_translator": BusinessInsightsTranslatorAgent("Business Translator", "Business Intelligence Expert", "executive translation", **kwargs),
-            "decision_maker": DecisionMakerAgent("Decision Maker", "Senior Business Analyst", "decision recommendations", **kwargs),
-            "presentation_architect": PresentationArchitectAgent("Presentation Architect", "Presentation Consultant", "slide storytelling", **kwargs),
         }
+        if self.output_path is OutputPath.ANALYTICS_REPORT:
+            self.agents.update(
+                {
+                    "market_researcher": MarketResearcherAgent("Market Researcher", "Market Research Specialist", "market trends", brave_client=self.brave_client, **kwargs),
+                    "planner": PlannerAgent("Analysis Planner", "Senior Data Strategist", "analysis planning", **kwargs),
+                    "coder": DataScientistCoderAgent("Data Scientist Coder", "Senior Data Scientist", "python analytics", **code_kwargs),
+                    "reviewer": DataScientistReviewerAgent("Code Reviewer", "Senior Reviewer", "debugging and analytical review", **code_kwargs),
+                    "business_translator": BusinessInsightsTranslatorAgent("Business Translator", "Business Intelligence Expert", "executive translation", **kwargs),
+                    "decision_maker": DecisionMakerAgent("Decision Maker", "Senior Business Analyst", "decision recommendations", **kwargs),
+                    "presentation_architect": PresentationArchitectAgent("Presentation Architect", "Presentation Consultant", "slide storytelling", **presentation_kwargs),
+                }
+            )
+        for agent in self.agents.values():
+            agent.set_shared_context(share_sample_values_with_model=config.share_sample_values_with_model)
         self.workflow_state: dict[str, Any] = {
             "csv_data": {},
             "user_data_description": "",
@@ -204,13 +276,22 @@ class MultiAgentOrchestrator:
             "analysis_results": {},
             "analysis_artifact_warnings": [],
             "current_step": 0,
-            "total_steps": 9,
+            "total_steps": len(self.workflow_steps),
             "status": "initialized",
             "saved_figures": [],
             "generated_reports": {},
             "workflow_objective": self._build_workflow_objective(""),
             "failure": {},
             "run_manifest": {
+                "run_id": self.run_id,
+                "output_path": self.output_path.value,
+                "run_directory": str(self.run_dir) if self.run_dir else "",
+                "model_name": config.model_name,
+                "agent_models": {
+                    "structured": config.structured_model_name or config.model_name,
+                    "code": config.code_model_name or config.model_name,
+                    "presentation": config.presentation_model_name or config.model_name,
+                },
                 "datasets": [],
                 "figures": [],
                 "reports": {},
@@ -220,6 +301,11 @@ class MultiAgentOrchestrator:
                 "analysis_loop_iterations": 0,
                 "analysis_retry_errors": [],
                 "analysis_retry_context_log": [],
+                "status": "initialized",
+                "started_at": datetime.now().astimezone().isoformat(),
+                "updated_at": datetime.now().astimezone().isoformat(),
+                "step_events": [],
+                "step_metrics": [],
             },
         }
         self._logger = logging.getLogger("Orchestrator")
@@ -261,6 +347,11 @@ class MultiAgentOrchestrator:
             }
         ]
         decision_question = normalized or "Identify the most decision-useful patterns, risks, and opportunities in the uploaded dataset."
+        output_criterion = (
+            "The self-contained HTML dashboard explains objective coverage, sources, and limitations."
+            if self.output_path is OutputPath.HTML_DASHBOARD
+            else "PDF and slide outputs explain objective coverage and limitations."
+        )
         return {
             "raw_description": normalized,
             "decision_question": decision_question,
@@ -271,7 +362,7 @@ class MultiAgentOrchestrator:
                 "Analysis choices match the uploaded dataset structure.",
                 "Findings include numeric evidence and clear business implications.",
                 "Recommendations are tied to data analysis, market context, and the stated objective.",
-                "PDF and slide outputs explain objective coverage and limitations.",
+                output_criterion,
             ],
             "limitations": [],
         }
@@ -305,12 +396,43 @@ class MultiAgentOrchestrator:
     def load_csv_paths(self, csv_paths: list[Path]) -> bool:
         try:
             for path in csv_paths:
+                resolved_path = path.resolve(strict=True)
+                file_size = resolved_path.stat().st_size
+                if file_size > self.config.max_csv_bytes:
+                    raise ValueError(
+                        f"CSV '{resolved_path.name}' is {file_size:,} bytes; "
+                        f"the configured limit is {self.config.max_csv_bytes:,} bytes."
+                    )
+                header = pd.read_csv(resolved_path, nrows=0)
+                if len(header.columns) > self.config.max_csv_columns:
+                    raise ValueError(
+                        f"CSV '{resolved_path.name}' has {len(header.columns):,} columns; "
+                        f"the configured limit is {self.config.max_csv_columns:,}."
+                    )
                 key = path.name
                 if key in self.workflow_state["csv_data"]:
-                    key = f"{path.stem}_{abs(hash(str(path.resolve()))) % 100000}{path.suffix}"
-                self.workflow_state["csv_data"][key] = pd.read_csv(path)
+                    stable_suffix = hashlib.sha256(str(resolved_path).encode("utf-8")).hexdigest()[:10]
+                    key = f"{path.stem}_{stable_suffix}{path.suffix}"
+                dataframe = pd.read_csv(resolved_path, nrows=self.config.max_csv_rows + 1)
+                if len(dataframe) > self.config.max_csv_rows:
+                    raise ValueError(
+                        f"CSV '{resolved_path.name}' exceeds the configured row limit "
+                        f"of {self.config.max_csv_rows:,}."
+                    )
+                self.workflow_state["csv_data"][key] = dataframe
+                digest = hashlib.sha256()
+                with resolved_path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
                 self.workflow_state["run_manifest"]["datasets"].append(
-                    {"name": key, "path": str(path), "rows": int(self.workflow_state["csv_data"][key].shape[0])}
+                    {
+                        "name": key,
+                        "path": str(resolved_path),
+                        "sha256": digest.hexdigest(),
+                        "bytes": file_size,
+                        "rows": int(dataframe.shape[0]),
+                        "columns": int(dataframe.shape[1]),
+                    }
                 )
             return True
         except Exception as exc:
@@ -327,14 +449,49 @@ class MultiAgentOrchestrator:
         return columns
 
     def _set_step(self, step_number: int, status: str) -> None:
-        self.workflow_state["current_step"] = step_number
-        step_name = WORKFLOW_STEPS[step_number - 1]
+        self.workflow_state["current_step"] = max(
+            int(self.workflow_state.get("current_step") or 0), int(step_number)
+        )
+        step_name = self.workflow_steps[step_number - 1]
+        now = datetime.now().astimezone().isoformat()
+        usage = self.openrouter_client.cost_tracker.snapshot()
+        event = {
+            "step": int(step_number),
+            "name": step_name,
+            "status": str(status),
+            "timestamp": now,
+            "usage": usage,
+        }
+        self.workflow_state["run_manifest"].setdefault("step_events", []).append(event)
+        normalized_status = str(status).strip().lower()
+        if normalized_status.startswith(("running", "planning")) and step_number not in self._step_started:
+            self._step_started[step_number] = (time.perf_counter(), usage, now)
+        if normalized_status in {"done", "failed"} and step_number in self._step_started:
+            started_monotonic, started_usage, started_at = self._step_started.pop(step_number)
+            metric = {
+                "step": int(step_number),
+                "name": step_name,
+                "status": normalized_status,
+                "started_at": started_at,
+                "ended_at": now,
+                "duration_ms": max(0, round((time.perf_counter() - started_monotonic) * 1000)),
+                "api_calls": max(0, usage["api_calls"] - started_usage["api_calls"]),
+                "failed_calls": max(0, usage["failed_calls"] - started_usage["failed_calls"]),
+                "prompt_tokens": max(0, usage["prompt_tokens"] - started_usage["prompt_tokens"]),
+                "completion_tokens": max(0, usage["completion_tokens"] - started_usage["completion_tokens"]),
+                "estimated_cost_usd": round(
+                    max(0.0, usage["estimated_cost_usd"] - started_usage["estimated_cost_usd"]), 6
+                ),
+            }
+            self.workflow_state["run_manifest"].setdefault("step_metrics", []).append(metric)
+        self.workflow_state["run_manifest"]["updated_at"] = now
         if self.step_callback:
             self.step_callback(step_number, step_name, status)
+        self._update_run_manifest()
 
     def _record_failure(self, exc: Exception) -> None:
         current_step = int(self.workflow_state.get("current_step") or 0)
-        step_name = WORKFLOW_STEPS[current_step - 1] if 1 <= current_step <= len(WORKFLOW_STEPS) else "unknown"
+        step_name = self.workflow_steps[current_step - 1] if 1 <= current_step <= len(self.workflow_steps) else "unknown"
         traceback_text = traceback.format_exc()
         self.workflow_state["failure"] = {
             "failed_step": current_step,
@@ -344,31 +501,73 @@ class MultiAgentOrchestrator:
             "partial_outputs_present": sorted(self.workflow_state.get("agent_outputs", {}).keys()),
             "recommended_retry_point": step_name,
         }
+        if hasattr(exc, "code"):
+            self.workflow_state["failure"]["error_code"] = str(getattr(exc, "code"))
+        if hasattr(exc, "retryable"):
+            self.workflow_state["failure"]["retryable"] = bool(getattr(exc, "retryable"))
+        if getattr(exc, "details", None):
+            self.workflow_state["failure"]["details"] = dict(getattr(exc, "details"))
 
     def execute_workflow(self) -> dict[str, Any]:
+        if self.output_path is OutputPath.HTML_DASHBOARD:
+            return self._execute_html_dashboard_workflow()
+
         outputs = self.workflow_state["agent_outputs"]
         self.workflow_state["status"] = "running"
         self.workflow_state["failure"] = {}
         try:
-            self._set_step(1, "running")
-            data_insights = self.agents["data_understander"].execute(self.workflow_state["csv_data"])
-            outputs["data_understander"] = data_insights
-            self._set_step(1, "done")
+            data_insights = outputs.get("data_understander")
+            if not isinstance(data_insights, dict):
+                self._set_step(1, "running")
+                data_insights = self.agents["data_understander"].execute(self.workflow_state["csv_data"])
+                outputs["data_understander"] = data_insights
+                self._set_step(1, "done")
+            else:
+                self._set_step(1, "cached")
 
-            self._set_step(2, "running")
-            market_insights = self.agents["market_researcher"].execute(data_insights)
-            outputs["market_researcher"] = market_insights
-            self._set_step(2, "done")
+            market_insights = outputs.get("market_researcher")
+            if not isinstance(market_insights, dict):
+                if self._market_research_is_enabled():
+                    self._set_step(2, "running")
+                    market_insights = self.agents["market_researcher"].execute(data_insights)
+                    self._set_step(2, "done")
+                else:
+                    market_insights = {
+                        "industry_overview": "External market research was intentionally skipped for this run.",
+                        "market_findings": [],
+                        "key_trends": [],
+                        "opportunities": [],
+                        "sources_cited": [],
+                        "search_queries": [],
+                        "market_evidence_level": "disabled",
+                    }
+                    self._set_step(2, "skipped")
+                outputs["market_researcher"] = market_insights
+            else:
+                self._set_step(2, "cached")
 
-            self._set_step(3, "running")
-            analysis_plan = self.agents["planner"].execute(data_insights, market_insights)
-            outputs["planner"] = analysis_plan
-            self._set_step(3, "done")
+            analysis_plan = outputs.get("planner")
+            if not isinstance(analysis_plan, dict):
+                self._set_step(3, "running")
+                analysis_plan = self.agents["planner"].execute(data_insights, market_insights)
+                outputs["planner"] = analysis_plan
+                self._set_step(3, "done")
+            else:
+                self._set_step(3, "cached")
 
             self.agents["coder"].context["data_understanding"] = data_insights
             self.agents["reviewer"].context["data_understanding"] = data_insights
-            final_code = self._coding_loop(analysis_plan)
-            outputs["final_code"] = final_code
+            final_code = str(outputs.get("final_code", "")).strip()
+            reusable_analysis = (
+                bool(final_code)
+                and self.workflow_state.get("analysis_results", {}).get("execution_status") == "success"
+            )
+            if not reusable_analysis:
+                final_code = self._coding_loop(analysis_plan)
+                outputs["final_code"] = final_code
+            else:
+                self._set_step(4, "cached")
+                self._set_step(5, "cached")
             if self.workflow_state["analysis_results"].get("execution_status") != "success":
                 self.workflow_state["analysis_results"] = self._execute_code(final_code)
             final_artifact_issues = self._analysis_output_issues(self.workflow_state["analysis_results"])
@@ -377,50 +576,342 @@ class MultiAgentOrchestrator:
                 execution_error = self.workflow_state["analysis_results"].get("error", "Unknown execution error.")
                 raise RuntimeError(f"Final analysis code failed to execute: {execution_error}")
 
-            self._set_step(6, "running")
-            business = self.agents["business_translator"].execute(
-                self.workflow_state["analysis_results"],
-                data_insights,
-                market_insights,
-            )
-            outputs["business_translator"] = business
-            self._set_step(6, "done")
+            # Build the canonical evidence layer before narrative agents run so they receive
+            # compact, corrected, traceable facts instead of truncated raw execution output.
+            self.workflow_state["evidence_bundle"] = build_evidence_bundle(self.workflow_state)
 
-            self._set_step(7, "running")
-            decision = self.agents["decision_maker"].execute(outputs, self.workflow_state["analysis_results"], business)
-            outputs["decision_maker"] = decision
-            self._set_step(7, "done")
+            business = outputs.get("business_translator")
+            if not isinstance(business, dict):
+                self._set_step(6, "running")
+                business = self.agents["business_translator"].execute(
+                    self.workflow_state["analysis_results"],
+                    data_insights,
+                    market_insights,
+                    self.workflow_state["evidence_bundle"],
+                )
+                outputs["business_translator"] = business
+                self._set_step(6, "done")
+            else:
+                self._set_step(6, "cached")
 
-            self._set_step(8, "running")
-            self.workflow_state["generated_reports"]["pdf"] = generate_pdf_report(self.workflow_state)
-            self._set_step(8, "done")
+            decision = outputs.get("decision_maker")
+            if not isinstance(decision, dict):
+                self._set_step(7, "running")
+                decision = self.agents["decision_maker"].execute(
+                    outputs,
+                    self.workflow_state["analysis_results"],
+                    business,
+                    self.workflow_state["evidence_bundle"],
+                )
+                outputs["decision_maker"] = decision
+                self._set_step(7, "done")
+            else:
+                self._set_step(7, "cached")
 
-            self._set_step(9, "planning")
-            outputs["presentation_architect"] = self.agents["presentation_architect"].execute(self.workflow_state)
-            self._set_step(9, "running")
-            self.workflow_state["generated_reports"]["slide_deck"] = generate_slide_deck(self.workflow_state)
-            self._set_step(9, "done")
-            self._update_run_manifest(final_code=final_code)
+            # Revalidate cached or newly generated narrative outputs. This attaches evidence
+            # IDs, softens unsupported language, and removes invented tree thresholds.
+            validate_and_sanitize_workflow(self.workflow_state)
 
+            report_dir = self._ensure_run_directory()
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="analytics-export") as executor:
+                pdf_future = executor.submit(self._generate_pdf_export, report_dir)
+                slides_future = executor.submit(self._generate_slide_export, report_dir, outputs)
+                pdf_future.result()
+                slides_future.result()
+            self._validate_final_artifact_consistency(report_dir)
+            self.workflow_state["current_step"] = 9
             self.workflow_state["status"] = "completed"
+            self._update_run_manifest(final_code=final_code)
         except Exception as exc:
             self._logger.error("Workflow failed: %s", exc)
             self._logger.error(traceback.format_exc())
             self._record_failure(exc)
-            self._update_run_manifest()
             self.workflow_state["status"] = "error"
+            self._update_run_manifest()
         return self.workflow_state
 
+    def _execute_html_dashboard_workflow(self) -> dict[str, Any]:
+        """Run the minimal HTML-dashboard branch without report/export agents."""
+        outputs = self.workflow_state["agent_outputs"]
+        self.workflow_state["status"] = "running"
+        self.workflow_state["failure"] = {}
+        try:
+            data_insights = outputs.get("data_understander")
+            if not isinstance(data_insights, dict):
+                self._set_step(1, "running")
+                data_insights = self.agents["data_understander"].execute(self.workflow_state["csv_data"])
+                outputs["data_understander"] = data_insights
+                self._set_step(1, "done")
+            else:
+                self._set_step(1, "cached")
+
+            from .html_dashboard.workflow import HTMLDashboardWorkflow
+
+            report_dir = self._ensure_run_directory()
+            dashboard_result = HTMLDashboardWorkflow(
+                self.config,
+                self.openrouter_client,
+                self.run_id,
+                report_dir,
+                self._set_step,
+            ).run(self.workflow_state)
+            self.workflow_state["html_dashboard_result"] = dashboard_result
+            self.workflow_state["generated_reports"].update(
+                {
+                    "html_dashboard": dashboard_result["html"],
+                    "dashboard_project": dashboard_result["project"],
+                    "dashboard_qa_receipt": dashboard_result["qa_receipt"],
+                }
+            )
+            self.workflow_state["current_step"] = len(self.workflow_steps)
+            self.workflow_state["status"] = "completed"
+            self._update_run_manifest(final_code="")
+        except Exception as exc:
+            self._logger.error("HTML dashboard workflow failed: %s", exc)
+            self._logger.error(traceback.format_exc())
+            self._record_failure(exc)
+            self.workflow_state["status"] = "error"
+            self._update_run_manifest()
+        return self.workflow_state
+
+    def _generate_pdf_export(self, report_dir: Path) -> None:
+        pdf_path = self.workflow_state["generated_reports"].get("pdf", "")
+        dependency_hash = artifact_dependency_hash(self.workflow_state, "pdf")
+        dependencies = self.workflow_state.setdefault("artifact_dependencies", {})
+        if pdf_path and Path(str(pdf_path)).is_file() and dependencies.get("pdf") == dependency_hash:
+            self._set_step(8, "cached")
+            return
+        self._set_step(8, "running")
+        self.workflow_state["generated_reports"]["pdf"] = generate_pdf_report(
+            self.workflow_state,
+            str(report_dir / "analytics_report.pdf"),
+        )
+        dependencies["pdf"] = dependency_hash
+        self._set_step(8, "done")
+
+    def _generate_slide_export(self, report_dir: Path, outputs: dict[str, Any]) -> None:
+        slide_path = self.workflow_state["generated_reports"].get("slide_deck", "")
+        dependency_hash = artifact_dependency_hash(self.workflow_state, "slides")
+        dependencies = self.workflow_state.setdefault("artifact_dependencies", {})
+        if slide_path and Path(str(slide_path)).is_file() and dependencies.get("slides") == dependency_hash:
+            self._set_step(9, "cached")
+            return
+        if isinstance(self.workflow_state.get("ppt_mcp_deck_spec"), dict):
+            self._set_step(9, "planning")
+            outputs["presentation_architect"] = {
+                "design_source": "ppt_mcp",
+                "deck_title": self.workflow_state["ppt_mcp_deck_spec"].get("deck_title", ""),
+                "slides": self.workflow_state["ppt_mcp_deck_spec"].get("slides", []),
+            }
+        elif not self.config.presentation_architect_enabled:
+            outputs["presentation_architect"] = {
+                "design_source": "deterministic_hybrid",
+                "deck_title": "",
+                "slides": [],
+            }
+        elif not isinstance(outputs.get("presentation_architect"), dict):
+            self._set_step(9, "planning")
+            try:
+                outputs["presentation_architect"] = self.agents["presentation_architect"].execute(
+                    self.workflow_state
+                )
+            except (RuntimeError, ValueError) as exc:
+                self._logger.warning(
+                    "Presentation architect plan failed; using validated deterministic deck fallback: %s", exc
+                )
+                outputs["presentation_architect"] = {
+                    "design_source": "deterministic_fallback",
+                    "deck_title": "",
+                    "slides": [],
+                    "planning_warning": str(exc),
+                }
+                self.workflow_state["run_manifest"].setdefault("warnings", []).append(
+                    "Presentation architect returned an invalid plan; deterministic deck fallback used."
+                )
+        self._set_step(9, "running")
+        self.workflow_state["_presentation_openrouter_client"] = self.presentation_openrouter_client
+        try:
+            self.workflow_state["generated_reports"]["slide_deck"] = generate_slide_deck(
+                self.workflow_state,
+                str(report_dir / "analytics_report.pptx"),
+                runtime_config=self.config,
+            )
+            dependencies["slides"] = dependency_hash
+        finally:
+            self.workflow_state.pop("_presentation_openrouter_client", None)
+        self._set_step(9, "done")
+
+    def _market_research_is_enabled(self) -> bool:
+        if not self.config.market_research_enabled:
+            return False
+        description = str(self.workflow_state.get("user_data_description", "")).lower()
+        skip_phrases = {
+            "dataset only",
+            "internal only",
+            "no external research",
+            "without external research",
+            "skip market research",
+        }
+        return not any(phrase in description for phrase in skip_phrases)
+
+    def _validate_final_artifact_consistency(self, report_dir: Path) -> None:
+        expected_hash = str((self.workflow_state.get("evidence_bundle", {}) or {}).get("bundle_hash", ""))
+        observed: dict[str, str] = {}
+        for label, path in (
+            ("pdf", report_dir / "report_outline.json"),
+            ("slides", report_dir / "slide_plan.json"),
+        ):
+            if not path.is_file():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if label == "slides":
+                observed[label] = str((payload.get("metadata", {}) or {}).get("evidence_bundle_hash", ""))
+            else:
+                observed[label] = str(payload.get("evidence_bundle_hash", ""))
+        mismatches = [label for label, value in observed.items() if expected_hash and value != expected_hash]
+        receipt = {
+            "status": "failed" if mismatches else "passed",
+            "expected_evidence_bundle_hash": expected_hash,
+            "artifact_hashes": observed,
+            "mismatches": mismatches,
+        }
+        self.workflow_state["final_output_consistency"] = receipt
+        if mismatches:
+            raise RuntimeError(
+                "Final PDF/slide evidence hashes do not match the canonical evidence bundle: "
+                + ", ".join(mismatches)
+            )
+
+    def _ensure_run_directory(self) -> Path:
+        if self.run_dir is None:
+            base = self.workspace / "runs" if self.workspace else Path(tempfile.gettempdir()) / "analytics_workflow_runs"
+            self.run_dir = base / self.run_id
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            self.workflow_state["run_manifest"]["run_directory"] = str(self.run_dir)
+        return self.run_dir
+
+    def _persist_run_artifacts(self, final_code: str = "") -> None:
+        with self._checkpoint_lock:
+            self._persist_run_artifacts_unlocked(final_code)
+
+    def _persist_run_artifacts_unlocked(self, final_code: str = "") -> None:
+        run_dir = self._ensure_run_directory()
+        final_code = final_code or str(self.workflow_state.get("agent_outputs", {}).get("final_code", ""))
+        if final_code:
+            code_path = run_dir / "final_analysis.py"
+            code_path.write_text(final_code, encoding="utf-8")
+            self.workflow_state.setdefault("generated_reports", {})["final_analysis_code"] = str(code_path)
+        manifest_path = run_dir / "run_manifest.json"
+        self.workflow_state.setdefault("generated_reports", {})["run_manifest"] = str(manifest_path)
+        agent_outputs_path = run_dir / "agent_outputs.json"
+        agent_outputs_path.write_text(
+            json.dumps(make_json_safe(self.workflow_state.get("agent_outputs", {})), indent=2, default=str),
+            encoding="utf-8",
+        )
+        self.workflow_state.setdefault("generated_reports", {})["agent_outputs"] = str(agent_outputs_path)
+        if self.workflow_state.get("analysis_results"):
+            analysis_results_path = run_dir / "analysis_results.json"
+            analysis_results_path.write_text(
+                json.dumps(make_json_safe(self.workflow_state["analysis_results"]), indent=2, default=str),
+                encoding="utf-8",
+            )
+            self.workflow_state.setdefault("generated_reports", {})["analysis_results"] = str(analysis_results_path)
+        for state_key, filename in (
+            ("evidence_bundle", "evidence_bundle.json"),
+            ("quality_receipt", "quality_receipt.json"),
+            ("pdf_quality_receipt", "pdf_quality_receipt.json"),
+            ("final_output_consistency", "final_output_consistency.json"),
+            ("artifact_dependencies", "artifact_dependencies.json"),
+        ):
+            payload = self.workflow_state.get(state_key)
+            if not payload:
+                continue
+            artifact_path = run_dir / filename
+            artifact_path.write_text(
+                json.dumps(make_json_safe(payload), indent=2, default=str),
+                encoding="utf-8",
+            )
+            self.workflow_state.setdefault("generated_reports", {})[state_key] = str(artifact_path)
+        delivery_dir = run_dir / "delivery"
+        delivery_dir.mkdir(exist_ok=True)
+        authoritative: dict[str, str] = {}
+        for report_key, filename in (
+            ("pdf", "analytics_report.pdf"),
+            ("slide_deck", "analytics_report.pptx"),
+            ("evidence_bundle", "evidence_bundle.json"),
+            ("quality_receipt", "quality_receipt.json"),
+            ("pdf_quality_receipt", "pdf_quality_receipt.json"),
+            ("final_output_consistency", "final_output_consistency.json"),
+        ):
+            source_text = str(self.workflow_state.get("generated_reports", {}).get(report_key, ""))
+            source = Path(source_text) if source_text else None
+            if source is None or not source.is_file():
+                continue
+            target = delivery_dir / filename
+            shutil.copy2(source, target)
+            authoritative[report_key] = str(target)
+        delivery_manifest = {
+            "run_id": self.run_id,
+            "authoritative": authoritative,
+            "quality_status": (self.workflow_state.get("quality_receipt", {}) or {}).get("status"),
+            "evidence_bundle_hash": (self.workflow_state.get("evidence_bundle", {}) or {}).get("bundle_hash"),
+            "generated_at": datetime.now().astimezone().isoformat(),
+        }
+        delivery_manifest_path = delivery_dir / "delivery_manifest.json"
+        delivery_manifest_path.write_text(json.dumps(delivery_manifest, indent=2), encoding="utf-8")
+        self.workflow_state.setdefault("generated_reports", {})["delivery_dir"] = str(delivery_dir)
+        self.workflow_state.setdefault("generated_reports", {})["delivery_manifest"] = str(delivery_manifest_path)
+        self.workflow_state.setdefault("run_manifest", {})["reports"] = dict(self.workflow_state.get("generated_reports", {}))
+        manifest_path.write_text(
+            json.dumps(make_json_safe(self.workflow_state.get("run_manifest", {})), indent=2, default=str),
+            encoding="utf-8",
+        )
+        shutil.copy2(manifest_path, delivery_dir / "run_manifest.json")
+
     def _update_run_manifest(self, final_code: str = "") -> None:
+        existing_warnings = list(self.workflow_state["run_manifest"].get("warnings", []))
+        artifact_warnings = list(self.workflow_state.get("analysis_artifact_warnings", []))
+        now = datetime.now().astimezone()
+        status = str(self.workflow_state.get("status", "initialized"))
+        lifecycle: dict[str, Any] = {}
+        if status in {"completed", "error"}:
+            lifecycle["completed_at"] = now.isoformat()
+            try:
+                started = datetime.fromisoformat(str(self.workflow_state["run_manifest"].get("started_at", "")))
+                lifecycle["run_duration_ms"] = max(0, round((now - started).total_seconds() * 1000))
+            except (TypeError, ValueError):
+                pass
         self.workflow_state["run_manifest"].update(
             {
                 "figures": list(self.workflow_state.get("saved_figures", [])),
                 "reports": dict(self.workflow_state.get("generated_reports", {})),
-                "warnings": list(self.workflow_state.get("analysis_artifact_warnings", [])),
+                "warnings": list(dict.fromkeys(str(item) for item in existing_warnings + artifact_warnings)),
                 "agent_outputs": sorted(self.workflow_state.get("agent_outputs", {}).keys()),
                 "final_code_present": bool(final_code or self.workflow_state.get("agent_outputs", {}).get("final_code")),
+                "presentation_backend_used": self.workflow_state.get("presentation_backend_used"),
+                "presentation_backend_log": make_json_safe(
+                    self.workflow_state.get("presentation_backend_log", [])
+                ),
+                "status": status,
+                "updated_at": now.isoformat(),
+                "current_step": int(self.workflow_state.get("current_step") or 0),
+                "usage": self.openrouter_client.cost_tracker.snapshot(),
+                "workflow_inputs": {
+                    "user_data_description": self.workflow_state.get("user_data_description", ""),
+                    "decision_tree_target_column": self.workflow_state.get("decision_tree_target_column", ""),
+                },
+                "evidence_bundle_hash": (self.workflow_state.get("evidence_bundle", {}) or {}).get("bundle_hash"),
+                "quality_status": (self.workflow_state.get("quality_receipt", {}) or {}).get("status"),
+                "final_output_consistency": make_json_safe(self.workflow_state.get("final_output_consistency", {})),
+                "artifact_dependencies": dict(self.workflow_state.get("artifact_dependencies", {})),
+                "failure": make_json_safe(self.workflow_state.get("failure", {})),
+                **lifecycle,
             }
         )
+        self._persist_run_artifacts(final_code=final_code)
 
     def _coding_loop(self, analysis_plan: dict[str, Any], max_iterations: int = 4) -> str:
         current_code = ""
@@ -456,6 +947,9 @@ class MultiAgentOrchestrator:
             finally:
                 self.agents["coder"].context.pop("progress_callback", None)
             self._set_step(4, "done")
+            candidate_dir = self._ensure_run_directory() / "code_candidates"
+            candidate_dir.mkdir(parents=True, exist_ok=True)
+            (candidate_dir / f"iteration_{iteration + 1}.py").write_text(current_code, encoding="utf-8")
 
             self._set_step(5, f"running (iteration {iteration + 1})")
             execution = self._execute_code(current_code)
@@ -474,6 +968,7 @@ class MultiAgentOrchestrator:
                     guidance=known_error_guidance,
                     execution=execution,
                     artifact_issues=artifact_issues,
+                    code=current_code,
                 )
                 self._logger.info(
                     "Analysis iteration %s execution failed: %s",
@@ -488,6 +983,17 @@ class MultiAgentOrchestrator:
                 if not artifact_issues:
                     approved_code = current_code
                     self.workflow_state["run_manifest"]["analysis_loop_iterations"] = iteration + 1
+                    self.workflow_state["agent_outputs"]["final_code_review"] = {
+                        "quality_score": 10,
+                        "decision": "APPROVE",
+                        "critical_issues": [],
+                        "improvements": [],
+                        "summary": (
+                            "Approved by the deterministic code-review gate: safety, syntax, isolated execution, "
+                            "required output contracts, objective coverage, and analytical artifacts all passed."
+                        ),
+                        "review_mode": "deterministic_contract",
+                    }
                     self._set_step(5, "done")
                     break
 
@@ -525,6 +1031,7 @@ class MultiAgentOrchestrator:
                     artifact_issues=artifact_issues,
                     objective_gaps=objective_gaps,
                     review=review,
+                    code=current_code,
                 )
                 self.agents["coder"].context["review_feedback"] = json_dumps_safe(
                     {
@@ -539,11 +1046,12 @@ class MultiAgentOrchestrator:
                 )
                 last_execution_error = " ; ".join(artifact_issues + objective_gaps) or review.get("summary", "Reviewer requested revision.")
                 if decision == "APPROVE":
-                    approved_code = current_code
-                    self.workflow_state["run_manifest"]["analysis_loop_iterations"] = iteration + 1
-                    self.workflow_state["agent_outputs"]["final_code_review"] = review
-                    self._set_step(5, "done")
-                    break
+                    # Model review cannot override deterministic evidence-contract failures.
+                    # Preserve its feedback, but require another code attempt until the
+                    # reported artifact issues are actually resolved.
+                    decision = "REVISE"
+                    review["decision"] = "REVISE"
+                    review.setdefault("critical_issues", []).extend(artifact_issues)
                 if iteration < max_iterations - 1:
                     self._set_step(5, "revise")
                     continue
@@ -601,7 +1109,6 @@ class MultiAgentOrchestrator:
                 self._set_step(5, "revise")
                 continue
         if approved_code:
-            self._set_step(5, "done")
             return approved_code
         self._set_step(5, "failed")
         raise RuntimeError(
@@ -621,6 +1128,7 @@ class MultiAgentOrchestrator:
         artifact_issues: list[str] | None = None,
         objective_gaps: list[str] | None = None,
         review: dict[str, Any] | None = None,
+        code: str = "",
     ) -> None:
         log = self.workflow_state["run_manifest"].setdefault("analysis_retry_context_log", [])
         entry: dict[str, Any] = {
@@ -640,7 +1148,10 @@ class MultiAgentOrchestrator:
             entry["artifact_count"] = len(execution.get("analysis_artifacts", []) or [])
             traceback_text = execution.get("traceback")
             if traceback_text:
-                entry["traceback_tail"] = self._compact_context_text(traceback_text, limit=500)
+                entry["traceback_tail"] = self._compact_context_text(traceback_text, limit=1200)
+            failure_context = self._code_failure_context(code, str(traceback_text or ""), str(error or ""))
+            if failure_context:
+                entry["failing_code_context"] = failure_context
         if review:
             entry["review_decision"] = self._compact_context_text(review.get("decision", ""))
             entry["review_summary"] = self._compact_context_text(review.get("summary", ""), limit=320)
@@ -650,7 +1161,7 @@ class MultiAgentOrchestrator:
                     self._compact_context_text(item, limit=220) for item in critical[:3]
                 ]
         log.append(entry)
-        del log[:-5]
+        del log[:-4]
         self.agents["coder"].context["code_loop_context_log"] = self._format_code_loop_context_log()
 
     def _current_code_loop_context_log(self) -> list[dict[str, Any]]:
@@ -666,7 +1177,12 @@ class MultiAgentOrchestrator:
                     "Temporary bounded retry memory for this run only. Use it to avoid repeating the same "
                     "mistake in the next generated script."
                 ),
-                "recent_failures": entries[-5:],
+                "revision_contract": [
+                    "Fix every recorded failure before adding optional analysis.",
+                    "Do not repeat imports, label lookups, tree introspection, or empty-array indexing that already failed.",
+                    "Use the exact failing source context below; replace the faulty expression rather than rewriting it unchanged.",
+                ],
+                "recent_failures_newest_first": list(reversed(entries[-4:])),
             },
             indent=2,
         )
@@ -731,6 +1247,17 @@ class MultiAgentOrchestrator:
             guidance.append(
                 "Fix column lookups: use exact column names from df.columns and the data profile. "
                 "If a likely column such as a satisfaction score is absent, choose an observed substitute and note the limitation."
+            )
+            if re.fullmatch(r"'[01]'", message):
+                guidance.insert(
+                    0,
+                    "Fix binary-label key types: pandas groupby/value_counts dictionaries preserve numeric labels as integers. "
+                    "Do not read ['0'] or ['1']; derive observed labels from the grouped index or use guarded .get(1, .get('1', fallback)) and .get(0, .get('0', fallback)).",
+                )
+        if "index 0 is out of bounds" in message or "single positional indexer is out-of-bounds" in message:
+            guidance.append(
+                "Fix empty filtered selections: never use .values[0], .iloc[0], or .index[0] after filtering for a named category unless emptiness was checked. "
+                "Do not invent literal categories; rank observed grouped rows, use .head(1), and branch when the result is empty."
             )
         if "charmap" in message and "codec can't encode" in message:
             guidance.append(
@@ -862,9 +1389,14 @@ class MultiAgentOrchestrator:
             "compute train_score = fitted_model.score(X_train, y_train), test_score = fitted_model.score(X_test, y_test), "
             "compute a simple baseline score, then call "
             f"decision_tree_artifact = build_sklearn_tree_artifact(fitted_model_or_pipeline, feature_names=None, target='{target}', "
-            "model_type='classification', train_score=train_score, test_score=test_score, baseline_score=baseline_score). "
+            "model_type='classification', train_score=train_score, test_score=test_score, baseline_score=baseline_score, "
+            "balanced_accuracy=balanced_accuracy, precision=precision, recall=recall, f1=f1, "
+            "confusion_matrix=confusion_matrix.tolist(), positive_test_support=int((y_test == positive_class).sum()), "
+            "cross_validation=cross_validation_summary). "
             "Then call render_decision_tree_rules_figure(decision_tree_artifact, 'decision_tree_rules.png'), "
             "append decision_tree_artifact to analysis_artifacts, and set figure_captions['decision_tree_rules.png']. "
+            "For imbalanced classification, also record balanced_accuracy, positive-class precision, recall, F1, "
+            "confusion_matrix, positive test support, and cross-validation status in analysis_summary['decision_tree_metrics']. "
             "Do not create children_left, thresholds, values, node lists, or rules yourself."
         )
 
@@ -916,6 +1448,28 @@ class MultiAgentOrchestrator:
                 issues.append(
                     "Decision tree test accuracy is below baseline, but the artifact does not warn that it is explanatory only."
                 )
+            imbalance = self._analysis_target_imbalance_ratio(analysis_summary)
+            if imbalance is not None and imbalance < 0.20:
+                metric_payload = analysis_summary.get("decision_tree_metrics", {}) if isinstance(analysis_summary, dict) else {}
+                metric_text = " ".join(str(key).lower() for key in metric_payload.keys()) if isinstance(metric_payload, dict) else ""
+                missing_sensitive = [
+                    label
+                    for label, aliases in {
+                        "balanced_accuracy": ("balanced_accuracy", "balanced accuracy"),
+                        "precision": ("precision",),
+                        "recall": ("recall", "sensitivity"),
+                        "f1": ("f1", "f1_score"),
+                        "confusion_matrix": ("confusion",),
+                        "positive_test_support": ("positive_test_support", "test_support", "positive support"),
+                    }.items()
+                    if not any(alias in metric_text for alias in aliases)
+                ]
+                if missing_sensitive:
+                    issues.append(
+                        "Imbalanced classification is missing class-sensitive validation metrics: "
+                        + ", ".join(missing_sensitive)
+                        + ". Accuracy alone is not decision-safe."
+                    )
         if figures and not structured_artifacts:
             issues.append("Analysis produced PNG figures but no structured chart artifacts; slide visuals cannot rebuild charts from images.")
         if not isinstance(analysis_summary, dict) or len(analysis_summary) < 2:
@@ -924,12 +1478,79 @@ class MultiAgentOrchestrator:
             issues.append("analysis_summary does not contain clear numeric evidence.")
         if not isinstance(business_findings, list) or len(business_findings) < 2:
             issues.append("business_findings are missing or too small to support business reporting.")
+        consistency_copy = make_json_safe(execution)
+        corrections = normalize_analysis_evidence(consistency_copy) if isinstance(consistency_copy, dict) else []
+        corrections = [
+            item for item in corrections
+            if item.get("reason") == "recomputed_from_structured_correlation_rows"
+        ]
+        if corrections:
+            issues.append(
+                "Structured artifact prose contradicts attached chart/model data: "
+                + "; ".join(
+                    f"{item.get('artifact_id')} {item.get('field')}" for item in corrections[:4]
+                )
+                + ". Recompute the claim from the structured values instead of hardcoding it."
+            )
+        issues.extend(self._planned_method_coverage_issues(execution))
 
         missing_captions = [figure for figure in figures if not _stringify(figure_captions.get(figure, "")).strip()]
         if missing_captions:
             issues.append(f"Missing figure captions for: {', '.join(missing_captions[:4])}.")
 
         return issues
+
+    def _planned_method_coverage_issues(self, execution: dict[str, Any]) -> list[str]:
+        planner = self.workflow_state.get("agent_outputs", {}).get("planner", {}) or {}
+        planned_text = json.dumps(
+            {
+                "statistical_methods": planner.get("statistical_methods", []),
+                "analysis_rules": planner.get("analysis_rules", []),
+                "success_metrics": planner.get("success_metrics", []),
+            },
+            default=str,
+        ).lower()
+        if not planned_text.strip("{}[] "):
+            return []
+        produced_text = json.dumps(
+            {
+                "summary": execution.get("analysis_summary", {}),
+                "artifacts": execution.get("analysis_artifacts", []),
+                "findings": execution.get("business_findings", []),
+            },
+            default=str,
+        ).lower()
+        checks = {
+            "chi-square association test": (("chi-square", "chi square", "chi2"), ("chi_square", "chi-square", "chi2")),
+            "numeric group comparison test": (("t-test", "t test", "mann-whitney"), ("t_test", "t-test", "mann", "group_test")),
+            "cross-validation": (("cross-validation", "cross validation", "5-fold"), ("cross_validation", "cross-validation", "cv_")),
+            "AUC": (("auc", "roc"), ("auc", "roc")),
+        }
+        missing: list[str] = []
+        for label, (plan_tokens, output_tokens) in checks.items():
+            if any(token in planned_text for token in plan_tokens) and not any(token in produced_text for token in output_tokens):
+                missing.append(label)
+        return [
+            "Analysis plan promised methods that were neither produced nor explicitly omitted: " + ", ".join(missing) + "."
+        ] if missing else []
+
+    def _analysis_target_imbalance_ratio(self, analysis_summary: Any) -> float | None:
+        if not isinstance(analysis_summary, dict):
+            return None
+        value = analysis_summary.get("target_imbalance_ratio")
+        try:
+            if value not in (None, ""):
+                return float(value)
+        except (TypeError, ValueError):
+            pass
+        distribution = analysis_summary.get("target_distribution")
+        if not isinstance(distribution, dict) or len(distribution) < 2:
+            return None
+        try:
+            counts = sorted(float(item) for item in distribution.values())
+        except (TypeError, ValueError):
+            return None
+        return counts[0] / counts[-1] if counts[-1] else None
 
     def _decision_tree_artifact_has_figure(self, artifact: dict[str, Any], figures: list[Any]) -> bool:
         data = artifact.get("data", {}) if isinstance(artifact.get("data"), dict) else {}
@@ -1010,7 +1631,21 @@ class MultiAgentOrchestrator:
                 data.get("limitation"),
             )
         ).lower()
-        return not ("explanatory" in text and ("baseline" in text or "production" in text))
+        caveat_language = any(
+            phrase in text
+            for phrase in (
+                "explanatory",
+                "exploratory screening",
+                "screening only",
+                "not predictive",
+                "no predictive lift",
+            )
+        )
+        comparison_language = any(
+            phrase in text
+            for phrase in ("baseline", "production", "deployment", "predictive lift")
+        )
+        return not (caveat_language and comparison_language)
 
     def _tree_node_id(self, node: dict[str, Any]) -> str:
         for key in ("id", "node_id", "name"):
@@ -1085,6 +1720,128 @@ class MultiAgentOrchestrator:
         return findings
 
     def _execute_code(self, code: str) -> dict[str, Any]:
+        safety_issues = self._analysis_code_safety_issues(code)
+        if safety_issues:
+            return {
+                "execution_status": "failed",
+                "error": "Unsafe analysis code blocked: " + "; ".join(safety_issues),
+                "traceback": "",
+                "safety_issues": safety_issues,
+            }
+        preflight_issues = self._analysis_code_preflight_issues(code)
+        if preflight_issues:
+            return {
+                "execution_status": "failed",
+                "error": "Analysis code preflight failed: " + "; ".join(preflight_issues),
+                "traceback": "",
+                "preflight_issues": preflight_issues,
+            }
+        dependency_result = self._missing_allowed_import_result(code)
+        if dependency_result:
+            return dependency_result
+
+        run_dir = self._ensure_run_directory()
+        execution_dir = run_dir / "analysis_attempts" / (
+            datetime.now().strftime("%Y%m%dT%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
+        )
+
+        execution_dir.mkdir(parents=True, exist_ok=False)
+        input_path = execution_dir / ".worker_input.pkl"
+        output_path = execution_dir / ".worker_output.json"
+        payload = {
+            "code": code,
+            "csv_data": self.workflow_state.get("csv_data", {}),
+            "decision_tree_target_column": self.workflow_state.get("decision_tree_target_column", ""),
+            "output_dir": str(execution_dir),
+        }
+        with input_path.open("wb") as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        project_root = Path(__file__).resolve().parents[1]
+        worker_command = (
+            "import runpy,sys;"
+            f"sys.path.insert(0,{str(project_root)!r});"
+            "runpy.run_module('analytics_workflow.analysis_worker',run_name='__main__')"
+        )
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+            "WINDIR": os.environ.get("WINDIR", ""),
+            "TEMP": str(execution_dir),
+            "TMP": str(execution_dir),
+            "HOME": str(execution_dir),
+            "USERPROFILE": str(execution_dir),
+            "MPLCONFIGDIR": str(execution_dir / ".matplotlib"),
+            "PYTHONHASHSEED": "0",
+            "NO_PROXY": "*",
+            "HTTP_PROXY": "http://127.0.0.1:9",
+            "HTTPS_PROXY": "http://127.0.0.1:9",
+        }
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-I", "-c", worker_command, str(input_path), str(output_path)],
+                cwd=execution_dir,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=self.config.analysis_timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "execution_status": "failed",
+                "error": f"Analysis execution exceeded {self.config.analysis_timeout_seconds} seconds and was terminated.",
+                "traceback": "",
+                "timed_out": True,
+            }
+        finally:
+            try:
+                input_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        if not output_path.exists():
+            return {
+                "execution_status": "failed",
+                "error": f"Analysis worker exited with code {completed.returncode} without a result.",
+                "traceback": (completed.stderr or completed.stdout or "")[-4000:],
+            }
+        try:
+            result = json.loads(output_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "execution_status": "failed",
+                "error": f"Analysis worker returned an invalid result: {exc}",
+                "traceback": (completed.stderr or completed.stdout or "")[-4000:],
+            }
+        finally:
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if not isinstance(result, dict):
+            return {"execution_status": "failed", "error": "Analysis worker result was not an object.", "traceback": ""}
+        result["execution_directory"] = str(execution_dir)
+        return result
+
+    def _code_failure_context(self, code: str, traceback_text: str, error_text: str) -> dict[str, Any]:
+        if not code:
+            return {}
+        matches = re.findall(r'File "<string>", line (\d+)', traceback_text)
+        line_number = int(matches[-1]) if matches else 0
+        lines = code.splitlines()
+        if line_number <= 0 or line_number > len(lines):
+            return {"error_type": error_text[:160]}
+        start = max(1, line_number - 3)
+        end = min(len(lines), line_number + 3)
+        snippet = [f"{index}: {lines[index - 1]}" for index in range(start, end + 1)]
+        return {
+            "line": line_number,
+            "error_type": error_text[:200],
+            "source": snippet,
+        }
+
+    def _execute_code_in_process(self, code: str) -> dict[str, Any]:
         original_pyplot_savefig = plt.savefig
         original_figure_savefig = Figure.savefig
         exec_globals: dict[str, Any] = {}
@@ -1134,20 +1891,22 @@ class MultiAgentOrchestrator:
                 "__builtins__": safe_builtins,
                 "__name__": "__analysis__",
             }
-            run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:6]
             saved_figure_paths = []
             figure_name_map = {}
+            execution_root = Path.cwd().resolve()
 
             def resolve_figure_path(filename: Any) -> Any:
                 if not isinstance(filename, (str, Path)):
-                    return filename
+                    raise ValueError("Figure output must be a file path.")
                 raw_path = Path(filename)
                 raw_name = str(raw_path)
                 if raw_path.suffix.lower() != ".png":
-                    return filename
-                if not (re.fullmatch(r"figure_\d+", raw_path.stem) or raw_path.stem == "decision_tree_rules"):
-                    return filename
-                resolved_path = raw_path.with_name(f"{raw_path.stem}_{run_stamp}{raw_path.suffix}")
+                    raise ValueError("Generated figures must use the .png extension.")
+                if raw_path.is_absolute() and raw_path.parent.resolve() == execution_root and run_stamp in raw_path.stem:
+                    return str(raw_path)
+                safe_stem = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_path.stem).strip("_-") or "figure"
+                resolved_path = execution_root / f"{safe_stem}_{run_stamp}.png"
                 figure_name_map[raw_name] = str(resolved_path)
                 return str(resolved_path)
 
@@ -1210,18 +1969,6 @@ class MultiAgentOrchestrator:
                 "missing_module": missing,
             }
         except Exception as exc:
-            try:
-                recovered = self._collect_analysis_execution_outputs(
-                    exec_globals,
-                    saved_figure_paths,
-                    figure_name_map,
-                    run_stamp,
-                    execution_error=exc,
-                )
-            except Exception:
-                recovered = {}
-            if recovered.get("execution_status") == "success":
-                return recovered
             return {"execution_status": "failed", "error": str(exc), "traceback": traceback.format_exc()}
         finally:
             plt.savefig = original_pyplot_savefig
@@ -1278,8 +2025,11 @@ class MultiAgentOrchestrator:
             chart_specs,
         )
         analysis_artifacts = self._enrich_decision_tree_artifacts_from_runtime(analysis_artifacts, exec_globals)
+        self._enrich_classification_validation(analysis_summary, analysis_artifacts, exec_globals)
         self._ensure_decision_tree_figures(analysis_artifacts, figure_captions, saved_figure_paths, run_stamp)
         figures = [path for path in saved_figure_paths if os.path.exists(path)]
+        analysis_artifacts = self._confine_artifact_paths(analysis_artifacts, figures)
+        chart_specs = self._confine_artifact_paths(chart_specs, figures)
         result = {
             "execution_status": "success",
             "figures_generated": figures,
@@ -1292,6 +2042,116 @@ class MultiAgentOrchestrator:
         if execution_error is not None:
             result["recovered_from_error"] = _stringify(execution_error)
         return result
+
+    def _enrich_classification_validation(
+        self,
+        analysis_summary: dict[str, Any],
+        artifacts: list[dict[str, Any]],
+        runtime_values: dict[str, Any],
+    ) -> None:
+        tree_artifacts = [
+            item for item in artifacts
+            if isinstance(item, dict) and str(item.get("chart_type", "")).lower() == "decision_tree"
+        ]
+        if not tree_artifacts:
+            return
+        y_test = runtime_values.get("y_test")
+        y_pred = runtime_values.get("y_pred_test")
+        if y_pred is None:
+            y_pred = runtime_values.get("y_test_pred")
+        if y_test is None or y_pred is None:
+            return
+        try:
+            from sklearn.metrics import (
+                balanced_accuracy_score,
+                confusion_matrix,
+                f1_score,
+                precision_score,
+                recall_score,
+                roc_auc_score,
+            )
+
+            observed = pd.Series(y_test)
+            predicted = pd.Series(y_pred)
+            classes = sorted(observed.dropna().unique().tolist())
+            if len(classes) != 2:
+                return
+            positive = classes[-1]
+            metrics = analysis_summary.setdefault("decision_tree_metrics", {})
+            metrics.update(
+                {
+                    "balanced_accuracy": round(float(balanced_accuracy_score(observed, predicted)), 4),
+                    "precision": round(float(precision_score(observed, predicted, pos_label=positive, zero_division=0)), 4),
+                    "recall": round(float(recall_score(observed, predicted, pos_label=positive, zero_division=0)), 4),
+                    "f1": round(float(f1_score(observed, predicted, pos_label=positive, zero_division=0)), 4),
+                    "confusion_matrix": confusion_matrix(observed, predicted, labels=classes).tolist(),
+                    "positive_test_support": int((observed == positive).sum()),
+                }
+            )
+            model = next(
+                (
+                    runtime_values.get(name)
+                    for name in ("pipeline", "model", "classifier", "clf", "tree_model")
+                    if runtime_values.get(name) is not None and hasattr(runtime_values.get(name), "predict")
+                ),
+                None,
+            )
+            if model is not None and hasattr(model, "predict_proba"):
+                try:
+                    probabilities = model.predict_proba(runtime_values.get("X_test"))[:, -1]
+                    metrics["auc_roc"] = round(float(roc_auc_score(observed, probabilities)), 4)
+                except Exception:
+                    pass
+            X_all = runtime_values.get("X")
+            y_all = runtime_values.get("y")
+            if model is not None and X_all is not None and y_all is not None:
+                try:
+                    from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+                    all_target = pd.Series(y_all)
+                    minority_support = int(all_target.value_counts().min())
+                    folds = min(5, minority_support)
+                    if folds >= 2:
+                        splitter = StratifiedKFold(n_splits=folds, shuffle=True, random_state=42)
+                        scores = cross_val_score(model, X_all, y_all, cv=splitter, scoring="balanced_accuracy")
+                        metrics["cross_validation"] = {
+                            "folds": folds,
+                            "metric": "balanced_accuracy",
+                            "mean": round(float(np.mean(scores)), 4),
+                            "std": round(float(np.std(scores)), 4),
+                        }
+                except Exception as exc:
+                    metrics["cross_validation"] = {"status": "not_completed", "reason": str(exc)[:180]}
+            for artifact in tree_artifacts:
+                data = artifact.setdefault("data", {})
+                if isinstance(data, dict):
+                    data.update(metrics)
+                    data["positive_class_rate"] = round(float((observed == positive).mean()), 4)
+        except Exception:
+            return
+
+    def _confine_artifact_paths(self, value: Any, allowed_paths: list[str]) -> Any:
+        allowed = {str(Path(path).resolve()) for path in allowed_paths if path}
+        path_keys = {"image_path", "visual_path", "fallback_path"}
+
+        def visit(item: Any) -> Any:
+            if isinstance(item, dict):
+                cleaned: dict[str, Any] = {}
+                for key, nested in item.items():
+                    if key in path_keys and nested:
+                        try:
+                            resolved = str(Path(str(nested)).resolve())
+                        except OSError:
+                            resolved = ""
+                        cleaned[key] = resolved if resolved in allowed else ""
+                    else:
+                        cleaned[key] = visit(nested)
+                return cleaned
+            if isinstance(item, list):
+                return [visit(nested) for nested in item]
+            return item
+
+        return visit(value)
 
     def _normalize_chart_specs(self, raw_chart_specs: Any) -> list[dict[str, Any]]:
         if not isinstance(raw_chart_specs, list):
@@ -1434,9 +2294,18 @@ class MultiAgentOrchestrator:
                 artifact.get("image_path") or artifact.get("fallback_path") or artifact.get("visual_path")
             )
             if existing_path and os.path.exists(existing_path):
-                if existing_path not in saved_figure_paths:
-                    saved_figure_paths.append(existing_path)
-                continue
+                resolved_existing = Path(existing_path).resolve()
+                try:
+                    resolved_existing.relative_to(Path.cwd().resolve())
+                except ValueError:
+                    existing_path = ""
+                else:
+                    existing_path = str(resolved_existing)
+                    artifact["fallback_path"] = existing_path
+                    artifact["image_path"] = existing_path
+                    if existing_path not in saved_figure_paths:
+                        saved_figure_paths.append(existing_path)
+                    continue
             existing_tree_figure = self._existing_decision_tree_figure(saved_figure_paths)
             if existing_tree_figure:
                 artifact["fallback_path"] = existing_tree_figure
@@ -1450,11 +2319,12 @@ class MultiAgentOrchestrator:
                     ),
                 )
                 continue
-            output_path = (
+            output_name = (
                 f"decision_tree_rules_{run_stamp}.png"
                 if tree_index == 1
                 else f"decision_tree_rules_{tree_index}_{run_stamp}.png"
             )
+            output_path = str(Path.cwd().resolve() / output_name)
             rendered = render_decision_tree_rules_figure(artifact, output_path)
             if not rendered:
                 continue
@@ -1617,15 +2487,17 @@ class MultiAgentOrchestrator:
         return {"scorer": scorer, "model": model, "feature_names": feature_names, "model_type": model_type}
 
     def _tree_estimator(self, value: Any) -> Any | None:
+        if isinstance(value, type):
+            return None
         if self._has_fitted_tree_object(value):
             return value
         steps = getattr(value, "steps", None)
-        if steps:
+        if isinstance(steps, (list, tuple)) and steps:
             for _, estimator in reversed(steps):
                 if self._has_fitted_tree_object(estimator):
                     return estimator
         named_steps = getattr(value, "named_steps", None)
-        if named_steps:
+        if named_steps and not isinstance(named_steps, property) and hasattr(named_steps, "values"):
             for estimator in reversed(list(named_steps.values())):
                 if self._has_fitted_tree_object(estimator):
                     return estimator
@@ -1767,6 +2639,23 @@ class MultiAgentOrchestrator:
             issues.append("avoid groupby(...).mean() on whole dataframes; use named aggregations on selected numeric metrics")
         if re.search(r"for\s+\w+\s+in\s+np\.(?:float|float64|mean|median|sum)", code):
             issues.append("do not iterate numpy scalar values; wrap scalar metrics in a one-row artifact data list")
+        if re.search(
+            r"\.loc\[[^\n]*==\s*['\"][^'\"]+['\"][^\n]*\]\s*(?:\[['\"][^'\"]+['\"]\])?\.values\s*\[\s*0\s*\]",
+            code,
+        ):
+            issues.append(
+                "do not filter for a literal category and immediately read .values[0]; rank observed groups and guard empty selections"
+            )
+        target_name = str(self.workflow_state.get("decision_tree_target_column", "")).strip()
+        target_is_numeric = any(
+            target_name in getattr(df, "columns", []) and pd.api.types.is_numeric_dtype(df[target_name])
+            for df in self.workflow_state.get("csv_data", {}).values()
+            if isinstance(df, pd.DataFrame)
+        )
+        if target_is_numeric and re.search(r"\[\s*['\"][01]['\"]\s*\]", code):
+            issues.append(
+                "numeric binary targets use integer 0/1 keys; do not index derived dictionaries with quoted '0' or '1'"
+            )
         issues.extend(self._undefined_name_preflight_issues(code))
         issues.extend(self._fragile_metric_lookup_preflight_issues(code))
         if self._uses_forbidden_tree_introspection(code):
@@ -2099,31 +2988,26 @@ class MultiAgentOrchestrator:
         return aliases
 
     def _install_missing_allowed_imports(self, code: str) -> dict[str, Any] | None:
+        return self._missing_allowed_import_result(code)
+
+    def _missing_allowed_import_result(self, code: str) -> dict[str, Any] | None:
         roots = self._static_import_roots(code)
-        install_attempts: list[dict[str, str]] = []
         for root in sorted(roots):
             package = APPROVED_ANALYSIS_PACKAGE_INSTALLS.get(root)
             if not package:
                 continue
             if importlib.util.find_spec(root) is not None:
                 continue
-            self._logger.info("Installing approved analysis package: %s", package)
-            try:
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", package],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                install_attempts.append({"module": root, "package": package, "status": "installed"})
-            except Exception as exc:
-                return {
-                    "execution_status": "failed",
-                    "error": f"Approved package install failed for '{package}': {exc}",
-                    "traceback": traceback.format_exc(),
-                    "missing_module": root,
-                    "package_install_attempts": install_attempts
-                    + [{"module": root, "package": package, "status": "failed"}],
-                }
+            return {
+                "execution_status": "failed",
+                "error": (
+                    f"Required analysis dependency '{package}' is not installed. "
+                    "Install the pinned project dependencies before starting the workflow; runtime installation is disabled."
+                ),
+                "traceback": "",
+                "missing_module": root,
+                "required_package": package,
+            }
         return None
 
     def _static_import_roots(self, code: str) -> set[str]:
@@ -2213,10 +3097,13 @@ def run_non_interactive_workflow(
     user_data_description: str = "",
     decision_tree_target_column: str = "",
     *,
+    output_path: OutputPath | str,
     workspace: Path | None = None,
     step_callback: StepCallback | None = None,
+    ppt_mcp_deck_spec: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = workspace or Path.cwd()
+    selected_output_path = coerce_output_path(output_path)
     selected_paths = [
         path if path.is_absolute() else root / path
         for path in csv_paths
@@ -2224,7 +3111,17 @@ def run_non_interactive_workflow(
     if not selected_paths:
         raise ValueError("At least one CSV path is required for a non-interactive workflow run.")
 
-    orchestrator = MultiAgentOrchestrator(config, step_callback=step_callback)
+    register_runtime_config(config)
+    orchestrator = MultiAgentOrchestrator(
+        config,
+        step_callback=step_callback,
+        workspace=root,
+        output_path=selected_output_path,
+    )
+    if ppt_mcp_deck_spec is not None:
+        if not isinstance(ppt_mcp_deck_spec, dict) or not isinstance(ppt_mcp_deck_spec.get("slides"), list):
+            raise ValueError("ppt_mcp_deck_spec must be an object containing a slides array.")
+        orchestrator.workflow_state["ppt_mcp_deck_spec"] = ppt_mcp_deck_spec
     orchestrator.set_user_data_description(user_data_description)
     if not orchestrator.load_csv_paths(selected_paths):
         orchestrator.workflow_state["status"] = "error"
@@ -2247,7 +3144,66 @@ def run_non_interactive_workflow(
     return result
 
 
-def run_terminal_workflow(config: RuntimeConfig, workspace: Path | None = None) -> int:
+def resume_non_interactive_workflow(
+    config: RuntimeConfig,
+    run_directory: Path,
+    *,
+    step_callback: StepCallback | None = None,
+) -> dict[str, Any]:
+    """Resume a run using validated checkpoints already persisted in its run folder."""
+    checkpoint = load_run_checkpoint(run_directory)
+    run_dir = checkpoint.run_directory
+    manifest = checkpoint.manifest
+    outputs = checkpoint.agent_outputs
+    selected_output_path = coerce_output_path(manifest.get("output_path", OutputPath.ANALYTICS_REPORT.value))
+
+    register_runtime_config(config)
+    workspace = run_dir.parent.parent if run_dir.parent.name == "runs" else run_dir.parent
+    orchestrator = MultiAgentOrchestrator(
+        config,
+        step_callback=step_callback,
+        workspace=workspace,
+        create_run_directory=False,
+        output_path=selected_output_path,
+    )
+    orchestrator.run_dir = run_dir
+    orchestrator.run_id = str(manifest.get("run_id") or run_dir.name)
+    orchestrator.workflow_state["run_manifest"] = manifest
+    # Upgrade legacy route values (including old power_bi checkpoints) to the
+    # current HTML dashboard route when resuming.
+    orchestrator.workflow_state["run_manifest"]["output_path"] = orchestrator.output_path.value
+    orchestrator.workflow_state["agent_outputs"] = outputs
+    orchestrator.workflow_state["generated_reports"] = dict(manifest.get("reports", {}) or {})
+    orchestrator.workflow_state["artifact_dependencies"] = dict(manifest.get("artifact_dependencies", {}) or {})
+    orchestrator.workflow_state["saved_figures"] = [
+        str(path) for path in manifest.get("figures", []) or [] if Path(str(path)).is_file()
+    ]
+    if checkpoint.analysis_results:
+        orchestrator.workflow_state["analysis_results"] = checkpoint.analysis_results
+
+    dataset_entries = list(manifest.get("datasets", []) or [])
+    dataset_paths = checkpoint.dataset_paths
+    orchestrator.workflow_state["run_manifest"]["datasets"] = []
+    if not dataset_paths or not orchestrator.load_csv_paths(dataset_paths):
+        orchestrator.workflow_state["run_manifest"]["datasets"] = dataset_entries
+        raise RuntimeError("Run datasets are unavailable or no longer pass input validation.")
+    orchestrator.workflow_state["run_manifest"]["datasets"] = dataset_entries
+
+    inputs = manifest.get("workflow_inputs", {}) or {}
+    orchestrator.set_user_data_description(str(inputs.get("user_data_description", "")))
+    orchestrator.set_decision_tree_target_column(str(inputs.get("decision_tree_target_column", "")))
+    orchestrator.workflow_state["status"] = "resuming"
+    result = orchestrator.execute_workflow()
+    result["cost_summary"] = orchestrator.openrouter_client.cost_tracker.report()
+    return result
+
+
+def run_terminal_workflow(
+    config: RuntimeConfig,
+    workspace: Path | None = None,
+    *,
+    output_path: OutputPath | str,
+) -> int:
     root = workspace or Path.cwd()
     print()
     print("Analytics workflow launcher")
@@ -2274,8 +3230,11 @@ def run_terminal_workflow(config: RuntimeConfig, workspace: Path | None = None) 
         csv_files,
         user_data_description,
         decision_tree_target_column=target_column,
+        output_path=output_path,
         workspace=root,
-        step_callback=_print_step_update,
+        step_callback=lambda number, name, status: print(
+            format_step_update(number, name, status, total_steps=len(workflow_steps_for(output_path)))
+        ),
     )
     print()
     print(f"Workflow status: {result.get('status')}")

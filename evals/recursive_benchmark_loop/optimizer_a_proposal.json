@@ -1,0 +1,97 @@
+{
+  "schema_version": "1.0",
+  "proposal_id": "optimizer-a-pass-01",
+  "iteration": 1,
+  "role": "codex_recursive_optimizer_a",
+  "scope": "benchmark_and_evaluation_infrastructure_only",
+  "baseline": {
+    "execution_score": null,
+    "execution_score_status": "pending_workflow_evaluator_receipt",
+    "legacy_output_rubric_criteria": 18,
+    "legacy_output_rubric_max_score": 90,
+    "legacy_output_rubric_pass_score": 76,
+    "legacy_report_path_coverage": true,
+    "legacy_html_dashboard_output_criteria": 0,
+    "legacy_anchor_levels_defined": [
+      0,
+      3,
+      5
+    ],
+    "observed_coverage_gaps": [
+      "HTML dashboard output quality and interaction are not represented in the legacy output rubric.",
+      "Scores 1, 2, and 4 have no behavioral anchors.",
+      "An aggregate score can conceal an unacceptable readability, visibility, trustworthiness, or executive-suitability dimension.",
+      "No negative-control or metamorphic case proves that a plausible-looking but unsupported output fails.",
+      "The stated 0.80 quality threshold conflicts with the legacy 76/90 pass threshold.",
+      "Legacy and sprint baseline scores use a /50 denominator without a reproducible receipt under the current 90-point rubric."
+    ]
+  },
+  "invariants": {
+    "minimum_normalized_pass_threshold": 0.84,
+    "preserve_legacy_critical_gates": [
+      "no critical workflow failure",
+      "no unsupported claim",
+      "no high-stakes policy blocker",
+      "PDF and PowerPoint share the same evidence hash",
+      "both rendered report artifacts pass semantic QA"
+    ],
+    "preserve_trust_audit_controls": [
+      "pdf validity",
+      "slide validity",
+      "evidence hash equality",
+      "complete delivery bundle"
+    ],
+    "forbid_production_runtime_edits": true,
+    "forbid_held_out_expected_result_edits": true,
+    "max_recursive_iterations": 3
+  },
+  "proposed_changes": [
+    {
+      "id": "P1_ROUTE_CONDITIONED_OUTPUT_GATES",
+      "change": "Evaluate report and HTML outputs through separate route-conditioned gates while preserving all legacy PDF/PPTX trust gates.",
+      "expected_impact": "Adds real HTML coverage without allowing an irrelevant artifact to raise another route's score.",
+      "risk": "A route can be misclassified or a required artifact can be omitted from its gate.",
+      "regression_gate": "Analytics-report cases must still require synchronized valid PDF/PPTX artifacts; HTML cases must require a self-contained valid dashboard, deterministic QA receipt, usable filters, nonblank visuals, and no PDF/PPTX creation."
+    },
+    {
+      "id": "P2_DIMENSION_FLOORS",
+      "change": "Score readability, visibility, trustworthiness, and executive suitability separately and require a minimum score in every required dimension in addition to the weighted overall threshold.",
+      "expected_impact": "Prevents score inflation from compensating for a critical weak dimension.",
+      "risk": "Poorly calibrated floors can create false failures at category boundaries.",
+      "regression_gate": "Each dimension must publish evidence-backed diagnostics; trustworthiness cannot be compensated by presentation scores; threshold changes require a versioned rationale and comparison receipt."
+    },
+    {
+      "id": "P3_EXPLICIT_ANCHORS_AND_EVIDENCE",
+      "change": "Replace undefined intermediate scores with observable anchors and require every nonbinary score to cite artifact evidence and a deterministic check or named human-review observation.",
+      "expected_impact": "Reduces ambiguous ratings, score drift, and unreviewable high scores.",
+      "risk": "Overly prescriptive anchors may miss valid novel presentations.",
+      "regression_gate": "A score without criterion ID, evidence locator, observation, and rater/check provenance must fail closed; qualitative exceptions must be explicit and cannot bypass hard gates."
+    },
+    {
+      "id": "P4_NEGATIVE_AND_METAMORPHIC_CONTROLS",
+      "change": "Add held-out negative controls for unsupported claims, broken evidence hashes, blank or clipped visuals, secret leakage, wrong-route artifacts, and plausible but unrelated charts; add order/whitespace/path metamorphic checks.",
+      "expected_impact": "Detects benchmark gaming, false positives, path sensitivity, and nondeterminism.",
+      "risk": "Fixture leakage or brittle textual assertions can make controls easy to game or flaky.",
+      "regression_gate": "Held-out expected results remain immutable to optimizers; repeated deterministic runs must agree; assertions target structured receipts and artifact semantics rather than exact prose."
+    },
+    {
+      "id": "P5_SCORE_PROVENANCE_AND_READABLE_RECEIPTS",
+      "change": "Remove unreceipted baseline claims from acceptance decisions and emit both machine-readable JSON and an executive Markdown summary with denominator, coverage, skipped cases, hard-gate state, and score delta.",
+      "expected_impact": "Makes benchmark progress auditable and understandable without reading test logs.",
+      "risk": "Summaries can diverge from the canonical receipt.",
+      "regression_gate": "Markdown values must be derived from and cross-checked against one canonical JSON receipt; missing, skipped, or unexecuted cases cannot count as passes."
+    }
+  ],
+  "acceptance_policy": {
+    "status": "proposed_pending_adversarial_review_and_baseline_execution",
+    "required_review_rounds": 2,
+    "accept_only_if": [
+      "Focused regression tests pass.",
+      "Workflow evaluator reports no loss of feature or agent coverage.",
+      "All legacy trust hard gates remain fail-closed.",
+      "HTML output coverage is present and route-isolated.",
+      "At least one held-out negative control catches a plausible false positive.",
+      "Repeated deterministic runs produce identical status and scores."
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "source": "https://github.com/microsoft/skills-for-fabric",
+  "tag": "v0.3.7",
+  "commit": "b961296e97a89a39e81e10501c2ef846ad0c54db",
+  "installed_at": "2026-07-13",
+  "license": "MIT",
+  "scope": "Project-local runtime guidance for the Power BI path",
+  "notes": "The upstream wildcard MCP configuration is retained as documentation only. Runtime uses tools/powerbi/mcp.runtime.json with a strict allow-list."
+}

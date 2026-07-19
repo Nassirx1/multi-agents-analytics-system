@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections import Counter
 from typing import Any
 
@@ -25,15 +26,35 @@ VISUAL_TEMPLATES = {
     "distribution_with_callout",
 }
 
+FATAL_DECK_ISSUES = {
+    "slide_count_outside_supported_range",
+    "missing_required_slide_role",
+    "title_slide_not_first",
+    "summary_slide_not_last",
+    "unsupported_template",
+    "missing_headline",
+    "missing_slide_purpose",
+    "missing_visual_reference",
+    "text_only_analysis_slide",
+    "missing_visual_type",
+    "unsupported_chart_type",
+    "chart_visual_missing_data",
+}
+
 
 def validate_deck_spec(deck: DeckSpec) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     roles = [slide.slide_role for slide in deck.slides]
-    if len(deck.slides) != 12:
-        issues.append({"scope": "deck", "issue": "slide_count_not_12", "count": len(deck.slides)})
-    for index, expected in enumerate(REQUIRED_SLIDE_ROLES, start=1):
-        if len(roles) < index or roles[index - 1] != expected:
-            issues.append({"scope": "deck", "issue": "missing_required_slide_role", "slide": index, "expected": expected})
+    if not 8 <= len(deck.slides) <= 16:
+        issues.append({"scope": "deck", "issue": "slide_count_outside_supported_range", "count": len(deck.slides)})
+    required_roles = list(dict.fromkeys(REQUIRED_SLIDE_ROLES))
+    for expected in required_roles:
+        if expected not in roles:
+            issues.append({"scope": "deck", "issue": "missing_required_slide_role", "expected": expected})
+    if roles and roles[0] != "title":
+        issues.append({"scope": "deck", "issue": "title_slide_not_first"})
+    if roles and roles[-1] != "summary":
+        issues.append({"scope": "deck", "issue": "summary_slide_not_last"})
 
     template_counts = Counter(slide.template for slide in deck.slides)
     for template, count in template_counts.items():
@@ -42,7 +63,15 @@ def validate_deck_spec(deck: DeckSpec) -> list[dict[str, Any]]:
 
     for slide in deck.slides:
         issues.extend(validate_slide_spec(slide))
+    analysis_messages = [compact_whitespace(slide.main_message).lower() for slide in deck.slides if slide.slide_role == "analysis" and compact_whitespace(slide.main_message)]
+    for message, count in Counter(analysis_messages).items():
+        if count > 1:
+            issues.append({"scope": "deck", "issue": "repeated_analysis_explanation", "count": count, "text": message[:100]})
     return issues
+
+
+def fatal_deck_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [issue for issue in issues if str(issue.get("issue", "")) in FATAL_DECK_ISSUES]
 
 
 def validate_slide_spec(slide: SlideSpec) -> list[dict[str, Any]]:
@@ -63,6 +92,10 @@ def validate_slide_spec(slide: SlideSpec) -> list[dict[str, Any]]:
         issues.append({"scope": "slide", "slide": slide.slide_number, "issue": "missing_visual_reference"})
     if slide.slide_role == "analysis" and not slide.visual:
         issues.append({"scope": "slide", "slide": slide.slide_number, "issue": "text_only_analysis_slide"})
+    if slide.slide_role == "analysis" and not slide.evidence_ids:
+        issues.append({"scope": "slide", "slide": slide.slide_number, "issue": "missing_evidence_reference"})
+    if slide.slide_role == "recommendations" and not slide.evidence_ids:
+        issues.append({"scope": "slide", "slide": slide.slide_number, "issue": "recommendation_missing_evidence_reference"})
     if slide.slide_role == "analysis" and slide.visual and not slide.visual.type:
         issues.append({"scope": "slide", "slide": slide.slide_number, "issue": "missing_visual_type"})
     if slide.slide_role == "analysis" and slide.visual and slide.visual.type in {"structured_chart", "chart", "native_chart"}:
@@ -91,6 +124,12 @@ def validate_slide_spec(slide: SlideSpec) -> list[dict[str, Any]]:
     )
     if compact_whitespace(slide_text) != soften_unsupported_impact_claim(slide_text):
         issues.append({"scope": "slide", "slide": slide.slide_number, "issue": "unsupported_quantified_impact_claim"})
+    if re.search(r"\{\s*[\"']?[A-Za-z_]+[\"']?\s*:", slide_text):
+        issues.append({"scope": "slide", "slide": slide.slide_number, "issue": "raw_json_in_slide_text"})
+    if re.search(r"[\u3400-\u9fff]", slide_text):
+        issues.append({"scope": "slide", "slide": slide.slide_number, "issue": "output_language_mismatch"})
+    if slide.slide_role not in {"title", "analysis"} and not slide.bullets and not slide.metrics and not slide.main_message.strip():
+        issues.append({"scope": "slide", "slide": slide.slide_number, "issue": "underfilled_content_slide"})
     return issues
 
 

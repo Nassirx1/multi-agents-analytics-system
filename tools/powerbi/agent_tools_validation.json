@@ -1,0 +1,93 @@
+{
+  "validation_rules": {
+    "powerbi_modeling_operation": [
+      {
+        "parameter": "tool_name",
+        "rules": {
+          "maxLength": 1000,
+          "required": true,
+          "enum": [
+            "connection_operations",
+            "database_operations",
+            "transaction_operations",
+            "model_operations",
+            "table_operations",
+            "column_operations",
+            "partition_operations",
+            "named_expression_operations",
+            "relationship_operations",
+            "measure_operations",
+            "dax_query_operations"
+          ]
+        }
+      },
+      {
+        "parameter": "request",
+        "rules": {
+          "additionalProperties": false,
+          "required": true,
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "min_length": 36,
+          "max_length": 36
+        }
+      },
+      {
+        "parameter": "project_root",
+        "rules": {
+          "maxLength": 1000,
+          "required": true
+        }
+      }
+    ],
+    "powerbi_author_report": [
+      {
+        "parameter": "project_root",
+        "rules": {
+          "maxLength": 1000,
+          "required": true
+        }
+      },
+      {
+        "parameter": "approved_plan",
+        "rules": {
+          "additionalProperties": false,
+          "required": true,
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "min_length": 36,
+          "max_length": 36
+        }
+      }
+    ],
+    "powerbi_bridge_validate": [
+      {
+        "parameter": "pbip_path",
+        "rules": {
+          "maxLength": 1000,
+          "required": true,
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "min_length": 36,
+          "max_length": 36
+        }
+      },
+      {
+        "parameter": "wait_seconds",
+        "rules": {
+          "minimum": 1,
+          "maximum": 900,
+          "required": true,
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "min_length": 36,
+          "max_length": 36
+        }
+      }
+    ]
+  }
+}

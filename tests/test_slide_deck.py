@@ -42,6 +42,57 @@ def decision_tree_shape_count(presentation: Presentation) -> int:
 
 
 class SlideDeckTests(unittest.TestCase):
+    def _ppt_mcp_spec(self, *, analysis_visual: bool = True) -> dict:
+        roles_and_templates = [
+            ("title", "title_cover"),
+            ("data_understanding", "data_understanding_overview"),
+            ("market_context", "market_context_bullets"),
+            ("analysis", "full_width_chart_takeaway"),
+            ("findings", "three_finding_cards"),
+            ("business_translation", "comparison_matrix"),
+            ("recommendations", "recommendation_priority"),
+            ("limitations", "limitations_professional"),
+            ("summary", "executive_summary_closing"),
+        ]
+        slides = []
+        for index, (role, template) in enumerate(roles_and_templates, start=1):
+            slide = {
+                "slide_number": index,
+                "slide_role": role,
+                "template": template,
+                "headline": f"PPT-MCP {role.replace('_', ' ')}",
+                "main_message": f"Dynamic message for {role}",
+                "content_blocks": [{"type": "bullets", "items": [f"Evidence for {role}"]}],
+            }
+            if role == "analysis" and analysis_visual:
+                slide["visual"] = {
+                    "type": "structured_chart",
+                    "chart_type": "bar",
+                    "title": "Dynamic comparison",
+                    "x": "segment",
+                    "y": "value",
+                    "data": [{"segment": "A", "value": 10}, {"segment": "B", "value": 15}],
+                }
+            slides.append(slide)
+        return {"deck_title": "PPT-MCP dynamic deck", "slides": slides}
+
+    def test_ppt_mcp_spec_bypasses_fixed_twelve_slide_story(self) -> None:
+        workflow_state = {"ppt_mcp_deck_spec": self._ppt_mcp_spec(), "analysis_results": {}}
+        deck = build_deck_spec(workflow_state)
+        self.assertEqual(len(deck.slides), 9)
+        self.assertEqual(deck.metadata["design_source"], "ppt_mcp")
+        self.assertEqual(deck.slides[3].headline, "PPT-MCP analysis")
+        self.assertEqual(deck.slides[-1].slide_role, "summary")
+
+    def test_successful_workflow_blocks_ppt_mcp_deck_with_fatal_visual_gap(self) -> None:
+        workflow_state = {
+            "ppt_mcp_deck_spec": self._ppt_mcp_spec(analysis_visual=False),
+            "analysis_results": {"execution_status": "success"},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(RuntimeError, "export quality gate"):
+                generate_slide_deck(workflow_state, str(Path(temp_dir) / "blocked.pptx"))
+
     def test_text_refiner_normalizes_unit_symbols_for_export_text(self) -> None:
         clean = compact_whitespace("Temperature rose +0.08\u00b0C and solar yield reached 6.4 kWh/m\u00b2/day \u2014 validate.")
 
@@ -1152,7 +1203,7 @@ class SlideDeckTests(unittest.TestCase):
         self.assertIn("borrower income at or below $19,984", findings_text)
         self.assertNotIn("person_income <=", findings_text)
 
-    def test_analysis_visual_queue_uses_structured_target_chart_before_weak_third_code_figure(self) -> None:
+    def test_analysis_visual_queue_keeps_saved_figures_before_structured_target_chart(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = []
             for name in ("home.png", "intent.png", "age.png"):
@@ -1212,12 +1263,12 @@ class SlideDeckTests(unittest.TestCase):
 
             deck = build_deck_spec(workflow_state)
             analysis_headlines = [slide.headline for slide in deck.slides if slide.slide_role == "analysis"]
-            analysis_visual_titles = [
-                slide.visual.title for slide in deck.slides if slide.slide_role == "analysis" and slide.visual
-            ]
+            analysis_visuals = [slide.visual for slide in deck.slides if slide.slide_role == "analysis" and slide.visual]
 
-        self.assertTrue(any("Loan Grade" in title for title in analysis_visual_titles))
-        self.assertFalse(any("Median borrower age" in headline for headline in analysis_headlines[:3]))
+        self.assertEqual([visual.type for visual in analysis_visuals[:3]], ["code_figure"] * 3)
+        self.assertEqual([visual.image_path for visual in analysis_visuals[:3]], paths)
+        self.assertEqual(analysis_visuals[3].artifact_id, "decision_tree_rules")
+        self.assertTrue(any("Median borrower age" in headline for headline in analysis_headlines[:3]))
 
     def test_softens_unsupported_attrition_reduction_claims(self) -> None:
         softened = soften_unsupported_impact_claim(
@@ -1378,20 +1429,23 @@ class SlideDeckTests(unittest.TestCase):
     def test_saved_figures_take_priority_over_structured_chart_specs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            figure_path = temp_path / "figure_1.png"
-            figure_path.write_bytes(PNG_BYTES)
+            figure_paths = []
+            for index in range(1, 5):
+                figure_path = temp_path / f"figure_{index}.png"
+                figure_path.write_bytes(PNG_BYTES)
+                figure_paths.append(str(figure_path))
             output_path = temp_path / "figure_primary.pptx"
             workflow_state = {
-                "saved_figures": [str(figure_path)],
+                "saved_figures": figure_paths,
                 "analysis_results": {
                     "chart_specs": [
                         {
-                            "id": "attrition_by_role",
+                            "id": f"attrition_by_role_{index}",
                             "artifact_type": "chart_spec",
                             "slide_candidate": True,
                             "finding": "Sales roles show the highest attrition rate.",
                             "chart_type": "bar",
-                            "title": "Attrition by role",
+                            "title": f"Attrition by role {index}",
                             "takeaway": "Sales roles require the first retention focus.",
                             "x": "role",
                             "y": "attrition_rate",
@@ -1401,10 +1455,14 @@ class SlideDeckTests(unittest.TestCase):
                                 {"role": "Operations", "attrition_rate": 12.0},
                             ],
                         }
+                        for index in range(1, 5)
                     ],
                     "analysis_summary": {"sales_attrition_rate": "24%", "sample": 3},
                     "business_findings": ["Sales roles show the highest attrition rate."],
-                    "figure_captions": {str(figure_path): "Code figure should match the PDF visual."},
+                    "figure_captions": {
+                        path: f"Code figure {index} should match the PDF visual."
+                        for index, path in enumerate(figure_paths, start=1)
+                    },
                 },
                 "agent_outputs": {
                     "presentation_architect": {"presentation_title": "Attrition Review", "slides": []},
@@ -1415,6 +1473,11 @@ class SlideDeckTests(unittest.TestCase):
                 },
             }
 
+            deck = build_deck_spec(workflow_state)
+            analysis_visuals = [slide.visual for slide in deck.slides if slide.slide_role == "analysis" and slide.visual]
+            self.assertEqual([visual.type for visual in analysis_visuals[:4]], ["code_figure"] * 4)
+            self.assertEqual([visual.image_path for visual in analysis_visuals[:4]], figure_paths)
+
             generate_slide_deck(workflow_state, str(output_path))
             presentation = Presentation(str(output_path))
             picture_count = sum(
@@ -1424,10 +1487,10 @@ class SlideDeckTests(unittest.TestCase):
                 if shape.shape_type == MSO_SHAPE_TYPE.PICTURE
             )
 
-            self.assertEqual(picture_count, 1)
-            self.assertGreaterEqual(reconstructed_chart_shape_count(presentation), 1)
+            self.assertEqual(picture_count, 4)
+            self.assertEqual(reconstructed_chart_shape_count(presentation), 0)
 
-    def test_structured_eda_precedes_dense_code_figures_when_tree_exists(self) -> None:
+    def test_saved_eda_figure_precedes_structured_fallbacks_when_tree_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             dense_figure = temp_path / "figure_dense_segments.png"
@@ -1482,8 +1545,10 @@ class SlideDeckTests(unittest.TestCase):
 
             deck = build_deck_spec(workflow_state)
             visuals = [slide.visual for slide in deck.slides if slide.slide_role == "analysis" and slide.visual]
-            self.assertEqual([visual.artifact_id for visual in visuals[:3]], [item["artifact_id"] for item in structured])
-            self.assertTrue(all(visual.type == "structured_chart" for visual in visuals[:3]))
+            self.assertEqual(visuals[0].type, "code_figure")
+            self.assertEqual(visuals[0].image_path, str(dense_figure))
+            self.assertEqual([visual.artifact_id for visual in visuals[1:3]], [item["artifact_id"] for item in structured[:2]])
+            self.assertTrue(all(visual.type == "structured_chart" for visual in visuals[1:3]))
             self.assertEqual(visuals[3].artifact_id, "decision_tree_rules")
 
     def test_duplicate_structured_eda_artifacts_do_not_repeat_analysis_slots(self) -> None:

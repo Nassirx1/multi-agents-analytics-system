@@ -15,7 +15,16 @@ PROJECT_SKILL_FILES = {
     "recommendation_generation": "recommendation_generation.SKILL.md",
     "report_generation": "report_generation.SKILL.md",
     "slide_generation": "slide_generation.SKILL.md",
+    "consulting_pptx": "build-consulting-pptx/SKILL.md",
     "self_evolution": "self_evolution.SKILL.md",
+}
+
+PROJECT_SKILL_REFERENCES = {
+    "consulting_pptx": (
+        "build-consulting-pptx/references/story-and-layout.md",
+        "build-consulting-pptx/references/qa-and-repair.md",
+        "build-consulting-pptx/references/mcp-tool-playbook.md",
+    ),
 }
 
 
@@ -36,6 +45,20 @@ def load_project_skill(skill_name: str) -> str:
         return path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+@lru_cache(maxsize=None)
+def load_project_skill_bundle(skill_name: str) -> str:
+    parts = [load_project_skill(skill_name)]
+    for relative_path in PROJECT_SKILL_REFERENCES.get(skill_name, ()):
+        path = PROJECT_SKILL_DIR / relative_path
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            content = ""
+        if content:
+            parts.append(content)
+    return "\n\n".join(part for part in parts if part)
 
 
 def required_project_skill_paths() -> list[Path]:

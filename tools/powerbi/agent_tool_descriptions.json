@@ -1,0 +1,56 @@
+{
+  "tools": [
+    {
+      "name": "powerbi_modeling_operation",
+      "purpose": "Invoke one allow-listed Power BI Modeling MCP operation inside the active run-local project",
+      "category": "data",
+      "inputs": [
+        {"name": "tool_name", "type": "string", "description": "Allow-listed Modeling MCP tool", "required": true, "enum": ["connection_operations", "database_operations", "transaction_operations", "model_operations", "table_operations", "column_operations", "partition_operations", "named_expression_operations", "relationship_operations", "measure_operations", "dax_query_operations"]},
+        {"name": "request", "type": "object", "description": "Arguments validated against the MCP-discovered input schema", "required": true},
+        {"name": "project_root", "type": "string", "description": "Resolved active run-local Power BI project root", "required": true}
+      ],
+      "outputs": [{"name": "receipt", "type": "object", "description": "Structured MCP operation result"}],
+      "error_conditions": ["MCP connection failed", "Tool not allow-listed", "Path outside run", "Invalid DAX", "Broken relationship", "Refresh failed"],
+      "side_effects": ["May modify only the active semantic model within a transaction"],
+      "idempotent": false,
+      "rate_limits": {"requests_per_minute": 30},
+      "dependencies": ["powerbi-modeling-mcp"],
+      "examples": [],
+      "security_requirements": ["Strict tool allow-list", "Run-directory confinement", "No Fabric publish", "No security-role operations"]
+    },
+    {
+      "name": "powerbi_author_report",
+      "purpose": "Write PBIR pages and visuals from an approved plan into the active project and validate them",
+      "category": "file",
+      "inputs": [
+        {"name": "project_root", "type": "string", "description": "Resolved active run-local Power BI project root", "required": true},
+        {"name": "approved_plan", "type": "object", "description": "Validated PowerBIPlan contract", "required": true}
+      ],
+      "outputs": [{"name": "validation_receipt", "type": "object", "description": "PBIR inventory and validator diagnostics"}],
+      "error_conditions": ["Missing field", "Unsupported visual", "PBIR validation failed", "Overlap", "Clipping"],
+      "side_effects": ["Writes only scoped .Report PBIR files"],
+      "idempotent": true,
+      "rate_limits": {"requests_per_minute": 30},
+      "dependencies": ["powerbi-report-authoring-cli"],
+      "examples": [],
+      "security_requirements": ["No Modeling MCP", "No Desktop Bridge", "Run-directory confinement"]
+    },
+    {
+      "name": "powerbi_bridge_validate",
+      "purpose": "Open the exact PBIP through Power BI Desktop Bridge, verify methods, reload serially, and capture every page",
+      "category": "compute",
+      "inputs": [
+        {"name": "pbip_path", "type": "string", "description": "Exact PBIP inside the active run", "required": true},
+        {"name": "wait_seconds", "type": "integer", "description": "Bounded Bridge readiness budget", "required": true, "minimum": 1, "maximum": 900}
+      ],
+      "outputs": [{"name": "bridge_receipt", "type": "object", "description": "PID, exact path, manifest, reload, and screenshot inventory"}],
+      "error_conditions": ["Bridge unavailable", "Unsupported methods", "Unsaved changes", "Reload failed", "Screenshot failed"],
+      "side_effects": ["Opens Power BI Desktop and captures local screenshots"],
+      "idempotent": true,
+      "rate_limits": {"requests_per_minute": 10},
+      "dependencies": ["powerbi-desktop-bridge-cli", "Power BI Desktop"],
+      "examples": [],
+      "security_requirements": ["Exact resolved path match", "Serial operations per PID", "Local named-pipe transport"]
+    }
+  ]
+}

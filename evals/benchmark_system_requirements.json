@@ -1,0 +1,59 @@
+{
+  "goal": "Build a reproducible benchmark and bounded recursive-improvement system for the Multi-Agent Analytics System, covering both the Analytics Report and HTML Dashboard paths, individual workflow agents, failure handling, and output quality.",
+  "description": "Four specialist agents collaborate through explicit artifacts: a benchmark architect defines immutable cases and rubrics; a workflow evaluator runs every case; two optimization agents alternate proposals and adversarial critiques without weakening gates. Output quality must score readability, visibility, trustworthiness, and executive suitability.",
+  "tasks": [
+    "Define feature benchmarks for routing, environment-only credentials, checkpointing, retries, branch isolation, analytics stages, HTML dashboard stages, PDF generation, and PowerPoint generation",
+    "Define per-agent contract benchmarks for data understanding, research, planning, coding, code review, business translation, decision making, report generation, slide generation, dashboard planning, dashboard rendering, and dashboard QA",
+    "Define deterministic output rubrics for readability, visibility, trustworthiness, and executive suitability",
+    "Execute every benchmark with structured receipts, durations, pass/fail status, and failure diagnostics",
+    "Alternate two bounded optimization agents that propose and critique changes",
+    "Reject benchmark weakening, score-only gaming, missing held-out checks, and regressions",
+    "Produce human-readable JSON and Markdown benchmark summaries"
+  ],
+  "constraints": {
+    "max_response_time": 900000,
+    "budget_per_task": 1.0,
+    "quality_threshold": 0.8,
+    "concurrent_tasks": 4,
+    "max_recursive_iterations": 3,
+    "data_retention_days": 90,
+    "security_level": "strict",
+    "compliance_requirements": [
+      "environment-only credentials",
+      "secret redaction",
+      "no runtime dependency on Codex self-evolution"
+    ]
+  },
+  "team_size": 4,
+  "performance_requirements": {
+    "high_throughput": false,
+    "fault_tolerance": true,
+    "low_latency": false,
+    "scalability": "medium",
+    "availability": 0.99
+  },
+  "safety_requirements": [
+    "Bound recursive optimization by a configured maximum",
+    "Keep benchmark definitions versioned and auditable",
+    "Require regression tests before accepting changes",
+    "Do not let optimizers edit held-out expected results",
+    "Preserve branch isolation and environment-only credentials",
+    "Log all proposals, critiques, acceptance decisions, and score deltas"
+  ],
+  "integration_requirements": [
+    "Python unittest compatibility",
+    "JSON benchmark catalog",
+    "JSON receipts",
+    "Markdown executive summary",
+    "CLI runner",
+    "Existing analytics workflow integration without runtime Codex coupling"
+  ],
+  "scale_requirements": {
+    "initial_users": 1,
+    "peak_concurrent_users": 4,
+    "data_volume_gb": 1,
+    "requests_per_hour": 20,
+    "geographic_regions": ["local"],
+    "growth_projection": "bounded"
+  }
+}

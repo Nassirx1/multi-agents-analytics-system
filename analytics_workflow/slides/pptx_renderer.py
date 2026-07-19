@@ -73,6 +73,20 @@ class PowerPointRenderer:
             "executive_summary_closing": self._render_closing,
         }
         renderers.get(spec.template, self._render_three_cards)(spec)
+        if self.prs.slides:
+            self._add_speaker_notes(self.prs.slides[-1], spec)
+
+    def _add_speaker_notes(self, slide: Any, spec: SlideSpec) -> None:
+        note = str(spec.speaker_note or "").strip()
+        if not note:
+            return
+        try:
+            notes_frame = slide.notes_slide.notes_text_frame
+            notes_frame.text = note
+        except (AttributeError, TypeError, ValueError):
+            # Older python-pptx versions may expose notes as read-only. The evidence
+            # metadata remains available in slide_plan.json in that environment.
+            return
 
     def _slide(self, background: tuple[int, int, int] | None = None) -> Any:
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
@@ -148,7 +162,11 @@ class PowerPointRenderer:
 
     def _footer(self, slide: Any, spec: SlideSpec) -> None:
         self._rect(slide, 0.72, 6.88, 11.9, 0.012, self.theme.line)
-        self._text(slide, shorten(self.deck.deck_title, 74), 0.72, 7.03, 8.0, 0.25, size=8, color=self.theme.muted)
+        evidence = ", ".join(spec.evidence_ids[:3] or spec.source_ids[:2])
+        footer_text = shorten(self.deck.deck_title, 58)
+        if evidence:
+            footer_text += f"  |  Evidence: {evidence}"
+        self._text(slide, shorten(footer_text, 105), 0.72, 7.03, 9.4, 0.25, size=8, color=self.theme.muted)
         self._text(slide, f"{spec.slide_number} / {len(self.deck.slides)}", 10.6, 7.03, 1.9, 0.25, size=8, color=self.theme.muted, align=PP_ALIGN.RIGHT)
 
     def _bullets(
@@ -198,17 +216,17 @@ class PowerPointRenderer:
             return False
         self._rect(slide, left, top, width, height, self.theme.panel, radius=True, line=self.theme.line)
         if spec.visual.type in {"structured_chart", "chart"}:
-            if spec.visual.chart_type == "decision_tree" and (spec.visual.fallback_path or spec.visual.image_path):
+            if spec.visual.fallback_path or spec.visual.image_path:
                 image_path = resolve_image_fallback(spec.visual, self.theme)
                 if image_path and os.path.exists(image_path):
                     metrics_text = _decision_tree_metric_text(spec.visual.data)
-                    reserved_metric_h = 0.28 if metrics_text else 0.0
+                    reserved_metric_h = 0.28 if spec.visual.chart_type == "decision_tree" and metrics_text else 0.0
                     image_width, image_height = _fit_image_size(image_path, width - 0.3, height - 0.35 - reserved_metric_h)
                     x = left + max((width - image_width) / 2, 0)
                     y = top + max((height - reserved_metric_h - image_height) / 2, 0)
                     picture = slide.shapes.add_picture(image_path, Inches(x), Inches(y), Inches(image_width), Inches(image_height))
-                    picture.name = "shared_decision_tree_image"
-                    if metrics_text:
+                    picture.name = "shared_decision_tree_image" if spec.visual.chart_type == "decision_tree" else "shared_python_eda_image"
+                    if spec.visual.chart_type == "decision_tree" and metrics_text:
                         self._text(
                             slide,
                             metrics_text,
@@ -223,14 +241,6 @@ class PowerPointRenderer:
                     return True
             if add_structured_chart(slide, spec.visual, left + 0.15, top + 0.18, width - 0.3, height - 0.38, self.theme):
                 return True
-            if spec.visual.fallback_path or spec.visual.image_path:
-                image_path = resolve_image_fallback(spec.visual, self.theme)
-                if image_path and os.path.exists(image_path):
-                    image_width, image_height = _fit_image_size(image_path, width - 0.3, height - 0.35)
-                    x = left + max((width - image_width) / 2, 0)
-                    y = top + max((height - image_height) / 2, 0)
-                    slide.shapes.add_picture(image_path, Inches(x), Inches(y), Inches(image_width), Inches(image_height))
-                    return True
             self._chart_unavailable(slide, spec, left, top, width, height)
             return False
         if spec.visual.type == "native_chart" and add_native_chart(slide, spec.visual, left + 0.15, top + 0.18, width - 0.3, height - 0.38, self.theme):
@@ -455,16 +465,29 @@ class PowerPointRenderer:
             left = 0.9 + (index % 2) * 5.85
             top = 2.32 + (index // 2) * 1.72
             self._rect(slide, left, top, 5.28, 1.22, self.theme.panel, radius=True, line=self.theme.line)
-            self._text(slide, "Limitation", left + 0.2, top + 0.17, 1.4, 0.23, size=9, color=self.theme.red, bold=True)
+            if spec.slide_role == "sources":
+                label = "Source" if str(item).lower().startswith(("dataset:", "[")) else "Evidence"
+                label_color = self.theme.blue
+            elif str(item).lstrip().lower().startswith("mitigation:"):
+                label = "Mitigation"
+                label_color = self.theme.teal
+            else:
+                label = "Limitation"
+                label_color = self.theme.red
+            self._text(slide, label, left + 0.2, top + 0.17, 1.4, 0.23, size=9, color=label_color, bold=True)
             self._text(slide, shorten(item, 118, placeholder=""), left + 0.2, top + 0.52, 4.8, 0.46, size=10, color=self.theme.ink)
         self._footer(slide, spec)
 
     def _render_closing(self, spec: SlideSpec) -> None:
         slide = self._slide(self.theme.navy)
         self._rect(slide, 0, 0, 0.46, self.theme.height, self.theme.gold)
-        self._text(slide, spec.headline, 0.82, 1.24, 11.1, 0.9, size=31, color=self.theme.white, bold=True)
-        self._rect(slide, 0.86, 2.32, 10.9, 0.04, self.theme.gold)
-        self._text(slide, shorten(spec.main_message, 230), 0.84, 2.72, 10.4, 1.0, size=17, color=self.theme.pale_blue)
+        headline = shorten(spec.headline, 88, placeholder="")
+        self._text(
+            slide, headline, 0.82, 1.08, 11.1, 1.22,
+            size=27 if len(headline) > 58 else 31, color=self.theme.white, bold=True,
+        )
+        self._rect(slide, 0.86, 2.48, 10.9, 0.04, self.theme.gold)
+        self._text(slide, shorten(spec.main_message, 210), 0.84, 2.76, 10.4, 1.0, size=17, color=self.theme.pale_blue)
         self._bullets(
             slide,
             spec.bullets,

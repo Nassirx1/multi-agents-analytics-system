@@ -106,6 +106,34 @@ class OpenRouterRetryBehaviorTests(unittest.TestCase):
         self.assertEqual(result, "ok")
         self.assertEqual(captured_payloads[0]["reasoning"], {"enabled": True, "exclude": False})
 
+    def test_agent_tool_completion_sends_only_supplied_tools(self) -> None:
+        response = _response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {"name": "slide", "arguments": '{"action":"list"}'},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        )
+        with patch.object(self.client.session, "post", return_value=response) as post:
+            message = self.client.chat_completion_with_tools(
+                [{"role": "user", "content": "build"}],
+                [{"type": "function", "function": {"name": "slide", "parameters": {"type": "object"}}}],
+            )
+        self.assertEqual(message["tool_calls"][0]["function"]["name"], "slide")
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual([tool["function"]["name"] for tool in payload["tools"]], ["slide"])
+
     def test_non_deepseek_v32_does_not_add_reasoning_payload(self) -> None:
         client = OpenRouterClient("k", "openai/gpt-4o-mini")
         captured_payloads: list[dict] = []
@@ -120,6 +148,21 @@ class OpenRouterRetryBehaviorTests(unittest.TestCase):
             client.chat_completion("sys", "user", max_retries=1)
 
         self.assertNotIn("reasoning", captured_payloads[0])
+
+    def test_chat_completion_can_disable_reasoning_for_structured_output(self) -> None:
+        good = _response({"choices": [{"message": {"content": "{}"}}]})
+        with patch.object(self.client.session, "post", return_value=good) as post:
+            result = self.client.chat_completion(
+                "sys",
+                "user",
+                max_tokens=8000,
+                reasoning_effort="none",
+            )
+
+        self.assertEqual(result, "{}")
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["max_tokens"], 8000)
+        self.assertEqual(payload["reasoning"], {"effort": "none", "exclude": True})
 
     def test_records_reasoning_returned_by_openrouter(self) -> None:
         response = _response(
@@ -218,6 +261,28 @@ class OpenRouterRetryBehaviorTests(unittest.TestCase):
         self.assertEqual(result, "ok")
         self.assertEqual(captured_max_tokens, [4000, 1478])
 
+    def test_non_retryable_http_error_fails_after_one_request(self) -> None:
+        unauthorized = _response({"error": {"message": "invalid key"}}, status_code=401)
+        with patch.object(self.client.session, "post", return_value=unauthorized) as post, patch(
+            "analytics_workflow.clients.time.sleep"
+        ) as sleep:
+            with self.assertRaisesRegex(RuntimeError, "not retryable \(401\)"):
+                self.client.chat_completion("sys", "user", max_retries=3)
+        self.assertEqual(post.call_count, 1)
+        sleep.assert_not_called()
+        self.assertEqual(self.client.cost_tracker.failed_calls, 1)
+
+    def test_rate_limit_honors_retry_after_header(self) -> None:
+        limited = _response({"error": {"message": "slow down"}}, status_code=429)
+        limited.headers = {"Retry-After": "3"}
+        good = _response({"choices": [{"message": {"content": "ok"}}]})
+        with patch.object(self.client.session, "post", side_effect=[limited, good]), patch(
+            "analytics_workflow.clients.time.sleep"
+        ) as sleep:
+            result = self.client.chat_completion("sys", "user", max_retries=2)
+        self.assertEqual(result, "ok")
+        sleep.assert_called_once_with(3.0)
+
     def test_affordable_token_limit_ignores_unmatched_text(self) -> None:
         self.assertEqual(OpenRouterClient._affordable_token_limit("can only afford 2360"), 2360)
         self.assertIsNone(OpenRouterClient._affordable_token_limit("rate limited"))
@@ -231,7 +296,7 @@ class OpenRouterJsonRetryTests(unittest.TestCase):
         responses = ["not json at all", json.dumps({"answer": 42})]
         captured_user_prompts: list[str] = []
 
-        def fake_chat(system_prompt, user_prompt):
+        def fake_chat(system_prompt, user_prompt, **kwargs):
             captured_user_prompts.append(user_prompt)
             return responses[len(captured_user_prompts) - 1]
 
@@ -247,13 +312,47 @@ class OpenRouterJsonRetryTests(unittest.TestCase):
             captured_logs.output,
         )
 
-    def test_chat_completion_json_returns_sentinel_when_retry_also_invalid(self) -> None:
-        with patch.object(self.client, "chat_completion", side_effect=["bad", "still bad"]), \
+    def test_chat_completion_json_fails_closed_when_retry_also_invalid(self) -> None:
+        with patch.object(self.client, "chat_completion", side_effect=["bad", "still bad", "also bad"]), \
              self.assertLogs("OpenRouterClient", level="ERROR"):
-            result = self.client.chat_completion_json("sys", "user", {"a": "b"})
-        self.assertIn("raw_text", result)
-        self.assertIn("parse_error", result)
-        self.assertEqual(result["raw_text"], "still bad")
+            with self.assertRaisesRegex(RuntimeError, "invalid JSON after final repair"):
+                self.client.chat_completion_json("sys", "user", {"a": "b"})
+
+    def test_chat_completion_json_repairs_schema_mismatch(self) -> None:
+        responses = [json.dumps({"answer": "wrong"}), json.dumps({"answer": 42})]
+        with patch.object(self.client, "chat_completion", side_effect=responses), self.assertLogs(
+            "OpenRouterClient", level="ERROR"
+        ):
+            result = self.client.chat_completion_json("sys", "user", {"answer": "integer"})
+        self.assertEqual(result, {"answer": 42})
+
+    def test_schema_validator_supports_dynamic_object_keys(self) -> None:
+        schema = {"datasets": {"<dataset>": {"quality_summary": "string"}}}
+        value = {"datasets": {"sample.csv": {"quality_summary": "Ready"}}}
+        self.assertEqual(self.client._schema_issues(value, schema), [])
+
+    def test_schema_validator_treats_pipe_delimited_dashboard_formats_as_string_enum(self) -> None:
+        schema = {"format": "number|integer|currency|percent"}
+
+        self.assertEqual(self.client._schema_issues({"format": "percent"}, schema), [])
+        self.assertEqual(
+            self.client._schema_issues({"format": "ratio"}, schema),
+            ["$.format must be one of: number, integer, currency, percent"],
+        )
+        self.assertEqual(
+            self.client._schema_issues({"format": 1}, schema),
+            ["$.format must be a string"],
+        )
+
+    def test_schema_validator_preserves_pipe_delimited_type_unions(self) -> None:
+        schema = {"value": "string|null"}
+
+        self.assertEqual(self.client._schema_issues({"value": "Ready"}, schema), [])
+        self.assertEqual(self.client._schema_issues({"value": None}, schema), [])
+        self.assertEqual(
+            self.client._schema_issues({"value": 1}, schema),
+            ["$.value must match one of: string, null"],
+        )
 
 
 if __name__ == "__main__":

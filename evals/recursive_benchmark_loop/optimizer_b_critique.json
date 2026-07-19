@@ -1,0 +1,296 @@
+{
+  "schema_version": "1.0",
+  "critique_id": "optimizer-b-pass-01",
+  "reviews_proposal_id": "optimizer-a-pass-01",
+  "iteration": 1,
+  "role": "codex_recursive_optimizer_b",
+  "scope": "benchmark_and_evaluation_infrastructure_only",
+  "verdict": "reject_pending_round_2",
+  "verdict_reason": "The first pass names important risks but does not yet enforce them. The current scorer can award 100 to fabricated evidence locators and raw boolean gate assertions, the implemented 75/100 overall threshold weakens the legacy analytics-report threshold of 76/90, and held-out controls remain public symbolic catalog entries without an immutable expected-results boundary.",
+  "snapshot": {
+    "optimizer_a_proposal_sha256": "1641e5c84e4c4f29ac8e80632f7f8b247c78cc12ffa04a95723c852abee9b9c1",
+    "optimizer_a_test_sha256": "7aad77e85e83f9ca178942d8c68aea0d9c4ebfd77085530574c759e851781f17",
+    "catalog_sha256_at_review": "b203f11b80da8534f7055d1c60169aed38e7f1266707cce9746b3b9f9e8eb110",
+    "rubric_sha256_at_review": "e0df2107ceeb3530f05abed355f4dfb5e4bf8575a4ccb9defc149c86ae4b0221",
+    "note": "Catalog and rubric hashes record an in-progress concurrent snapshot. The pass-1 proposal and its test are historical review inputs and must not be rewritten by round 2."
+  },
+  "demonstrations": {
+    "fabricated_evidence_probe": {
+      "input": "Every criterion value was 1.0 and every evidence list contained only 'not-a-real-locator'; every required gate was supplied as raw true.",
+      "result": "passed",
+      "overall_score": 100.0,
+      "dimension_scores": {
+        "readability": 100.0,
+        "visibility": 100.0,
+        "trustworthiness": 100.0,
+        "executive_suitability": 100.0
+      },
+      "interpretation": "Presence-only evidence and self-asserted gates allow a perfect score without an artifact."
+    },
+    "threshold_probe": {
+      "legacy_analytics_report_threshold": 0.8444444444444444,
+      "optimizer_a_invariant_floor": 0.84,
+      "implemented_overall_threshold": 0.75,
+      "implemented_delta_percentage_points": -9.444444444444443,
+      "interpretation": "Both the proposal floor and implementation are below the preserved 76/90 report threshold."
+    },
+    "held_out_probe": {
+      "definition_and_expected_result_are_public_together": true,
+      "immutable_external_manifest_present_at_snapshot": false,
+      "interpretation": "A catalog tag named held_out is not a held-out boundary; an optimizer can read and target its mutations and expected outcomes."
+    }
+  },
+  "findings": [
+    {
+      "id": "B01_THRESHOLD_REGRESSION",
+      "severity": "blocker",
+      "category": "threshold_inflation",
+      "observation": "The proposal permits 0.84 even though 76/90 is 0.844444..., while the in-progress rubric uses 75/100.",
+      "evidence": ["evals/output_quality_rubric.md:28", "optimizer_a_proposal.json:invariants.minimum_normalized_pass_threshold", "benchmark_suite/rubrics.py:OVERALL_MINIMUM_SCORE"],
+      "exploit": "A candidate that would fail the preserved report rubric can be declared improved by switching denominators.",
+      "impact": "A score-only improvement can silently weaken the analytics-report acceptance gate.",
+      "required_fix": "Keep 76/90 as a non-compensable analytics-report legacy gate, set any common normalized threshold no lower than 84.4445, and version route-specific thresholds.",
+      "acceptance_test": "A synthetic report scoring 75 through 84.44 fails; threshold or weight reductions fail an invariant test."
+    },
+    {
+      "id": "B02_UNRESOLVED_EVIDENCE_LOCATORS",
+      "severity": "blocker",
+      "category": "benchmark_gaming",
+      "observation": "The scorer checks only that an evidence string is non-empty.",
+      "evidence": ["benchmark_suite/rubrics.py:score_output_quality", "demonstrations.fabricated_evidence_probe"],
+      "exploit": "The string 'not-a-real-locator' earns full credit for every criterion.",
+      "impact": "Readability, visibility, trustworthiness, and executive suitability can all be fabricated without outputs.",
+      "required_fix": "Resolve typed locators against a confined artifact inventory, verify selector/page/slide/calculation existence and hash, and fail unresolved evidence closed.",
+      "acceptance_test": "Nonexistent, out-of-run, wrong-hash, and wrong-artifact locators receive zero and a blocking diagnostic."
+    },
+    {
+      "id": "B03_SELF_ASSERTED_HARD_GATES",
+      "severity": "blocker",
+      "category": "circular_evaluation",
+      "observation": "Raw booleans are sufficient to satisfy all hard gates; provenance is not required.",
+      "evidence": ["benchmark_suite/rubrics.py:score_output_quality", "demonstrations.fabricated_evidence_probe"],
+      "exploit": "The same component being evaluated can submit true for its own QA and integrity gates.",
+      "impact": "Critical workflow, safety, evidence, rendering, and secret-protection failures can be masked.",
+      "required_fix": "Accept gate receipts only from allow-listed independent deterministic evaluators with check ID, artifact hash, evaluator version, timestamp, and observed facts.",
+      "acceptance_test": "Bare booleans, agent-authored receipts, stale hashes, unknown evaluators, and missing route gates all fail closed."
+    },
+    {
+      "id": "B04_HELD_OUT_IS_PUBLIC_AND_MUTABLE",
+      "severity": "blocker",
+      "category": "weak_held_out_tests",
+      "observation": "The held-out variants and their expected outcomes are readable in the same public catalog used by optimizers.",
+      "evidence": ["benchmark_suite/catalog.py:quality.held_out_metamorphic_controls", "demonstrations.held_out_probe"],
+      "exploit": "An optimizer can special-case the named mutations or edit expected outcomes.",
+      "impact": "Passing the held-out case does not estimate generalization or resistance to benchmark gaming.",
+      "required_fix": "Separate public development cases from a frozen held-out manifest with precommitted fixture and expected-result hashes; optimizers receive only aggregate held-out receipts.",
+      "acceptance_test": "Changing a held-out fixture, expected result, split membership, or hash causes the acceptance runner to abort before scoring."
+    },
+    {
+      "id": "B05_DECLARATIVE_CASES_CAN_BE_UNEXECUTED",
+      "severity": "blocker",
+      "category": "coverage_illusion",
+      "observation": "Catalog entries name evaluator targets and symbolic fixtures, but catalog size alone does not prove a callable evaluator or fixture exists.",
+      "evidence": ["benchmark_suite/catalog.py:BenchmarkCase.target", "benchmark_suite/catalog.py:BenchmarkCase.fixture"],
+      "exploit": "A summary can report broad feature and agent coverage while skipping unregistered targets or treating fixture labels as evidence.",
+      "impact": "Most features and workflow agents may remain untested despite a complete-looking catalog.",
+      "required_fix": "Validate a one-to-one target registry, resolvable fixture registry, executed receipt per case, and zero skipped or unknown cases in acceptance mode.",
+      "acceptance_test": "Delete one evaluator or fixture registration and assert the run fails before execution with coverage below 100%."
+    },
+    {
+      "id": "B06_SUBJECTIVE_SCORES_LACK_ANCHORS",
+      "severity": "high",
+      "category": "unverifiable_subjectivity",
+      "observation": "Continuous values from 0 to 1 have no behavioral anchors for intermediate scores and no rater calibration protocol.",
+      "evidence": ["benchmark_suite/rubrics.py:Observation", "benchmark_suite/rubrics.py:_bounded", "optimizer_a_review.md:High-value gaps and failure modes"],
+      "exploit": "A judge can move a score from 0.6 to 0.9 without new observable evidence.",
+      "impact": "Iteration deltas may measure rater drift rather than output improvement.",
+      "required_fix": "Publish criterion-specific 0/25/50/75/100 anchors, deterministic checks where possible, blinded double-rating for residual subjective criteria, and disagreement adjudication thresholds.",
+      "acceptance_test": "A calibration set must meet a predeclared agreement target and every nonbinary score must name the matching anchor and observation."
+    },
+    {
+      "id": "B07_SAME_EVIDENCE_CAN_SCORE_EVERYTHING",
+      "severity": "high",
+      "category": "benchmark_gaming",
+      "observation": "The same locator can be repeated across all criteria without relevance, uniqueness, or coverage checks.",
+      "evidence": ["benchmark_suite/rubrics.py:score_output_quality", "demonstrations.fabricated_evidence_probe"],
+      "exploit": "One QA receipt can be cited for legibility, calculations, recommendations, provenance, and clipping.",
+      "impact": "A narrow artifact can inflate all four output dimensions.",
+      "required_fix": "Define allowed evidence types per criterion, require distinct observations where semantics differ, and verify the evidence contains the fact being scored.",
+      "acceptance_test": "A single generic locator reused across unrelated criteria is rejected with criterion-specific evidence diagnostics."
+    },
+    {
+      "id": "B08_LEGACY_CROSSWALK_IS_NOT_EQUIVALENCE",
+      "severity": "high",
+      "category": "hard_gate_preservation",
+      "observation": "The crosswalk maps labels but does not execute all legacy semantics such as required output completeness, page numbering, Unicode safety, source labels, and chart-data alignment.",
+      "evidence": ["evals/output_quality_rubric.md:criteria 2, 10, 17, 18", "benchmark_suite/rubrics.py:LEGACY_CRITERIA_CROSSWALK"],
+      "exploit": "A mapped replacement can pass while omitting figures or structured JSON, using generic charts, or producing source-free slides.",
+      "impact": "Existing accepted behavior can regress under a cosmetically complete crosswalk.",
+      "required_fix": "Keep the legacy report rubric as an executable parallel gate until equivalence is demonstrated case by case with positive and negative fixtures.",
+      "acceptance_test": "Every legacy criterion has a mutation that fails both the legacy check and its proposed replacement."
+    },
+    {
+      "id": "B09_ITERATIONS_ARE_NOT_COMPARABLE",
+      "severity": "high",
+      "category": "iteration_comparability",
+      "observation": "A score receipt is not sufficient without catalog, rubric, fixture, evaluator, environment, seed, and artifact identities.",
+      "evidence": ["optimizer_a_proposal.json:P5_SCORE_PROVENANCE_AND_READABLE_RECEIPTS"],
+      "exploit": "An apparent gain can result from changed cases, dependencies, renderer, judge, or denominator.",
+      "impact": "The recursive loop cannot attribute improvement to the candidate change.",
+      "required_fix": "Emit a comparison fingerprint and refuse deltas unless case IDs, fixture hashes, rubric/evaluator versions, environment class, seeds, and route match; use paired per-case deltas.",
+      "acceptance_test": "Any fingerprint mismatch reports not comparable rather than an improvement; reordered equivalent inputs remain comparable."
+    },
+    {
+      "id": "B10_FLAKINESS_POLICY_IS_UNSPECIFIED",
+      "severity": "high",
+      "category": "flakiness",
+      "observation": "The proposal requests repeatability but does not set repeat counts, semantic tolerances, renderer fingerprints, or quarantine policy.",
+      "evidence": ["optimizer_a_proposal.json:acceptance_policy", "optimizer_a_review.md:Anti-gaming and determinism requirements"],
+      "exploit": "A lucky single pass or environment-specific rendering result can be accepted.",
+      "impact": "False improvements and intermittent regressions enter the recursive loop.",
+      "required_fix": "Run deterministic cases at least three times, compare canonical semantic receipts, pin seeds/timezones/locales/renderers, and fail unstable cases instead of averaging them away.",
+      "acceptance_test": "An alternating evaluator and an order-sensitive evaluator are both detected as unstable."
+    },
+    {
+      "id": "B11_EXECUTIVE_AND_READABILITY_KEYWORD_GAMING",
+      "severity": "high",
+      "category": "subjective_output_gaming",
+      "observation": "Criteria can be satisfied by asserted values even when owner/timing/decision vocabulary is irrelevant or contradictory.",
+      "evidence": ["benchmark_suite/rubrics.py:executive_suitability", "benchmark_suite/rubrics.py:readability"],
+      "exploit": "Boilerplate containing 'owner', 'timeline', and 'decision' can score highly despite being unrelated to evidence.",
+      "impact": "Outputs optimize rubric vocabulary instead of executive usefulness.",
+      "required_fix": "Add plausible negative controls with rubric vocabulary but wrong decision, unsupported action, contradictory priority, hidden caveat, and unreadable density.",
+      "acceptance_test": "Keyword-rich but semantically irrelevant outputs fail executive suitability and trustworthiness without exact-prose matching."
+    },
+    {
+      "id": "B12_RENDERED_VISIBILITY_COVERAGE_IS_TOO_NARROW",
+      "severity": "high",
+      "category": "render_validation",
+      "observation": "Visibility labels do not by themselves prove inspection at all required PDF pages, slides, dashboard pages, or viewport sizes.",
+      "evidence": ["benchmark_suite/rubrics.py:visibility", "benchmark_suite/catalog.py:generator cases"],
+      "exploit": "A title page or first dashboard page can pass while later pages are blank, clipped, or inaccessible.",
+      "impact": "The exact output defects the user experienced can evade the benchmark.",
+      "required_fix": "Require page/slide inventory coverage and dashboard desktop/tablet/mobile viewport matrices, with nonblank visual counts, clipping/overlap checks, and interaction-state screenshots.",
+      "acceptance_test": "Mutations on the last page, hidden tab, narrow viewport, and filtered-empty state are detected."
+    },
+    {
+      "id": "B13_OPTIMIZER_BOUNDARY_IS_POLICY_ONLY",
+      "severity": "high",
+      "category": "recursive_loop_integrity",
+      "observation": "The proposal forbids optimizers from changing held-out expectations and runtime code, but no ownership or diff gate enforces the boundary.",
+      "evidence": ["optimizer_a_proposal.json:invariants", "optimizer_a_review.md:Scope"],
+      "exploit": "An optimizer can improve its score by editing cases, weights, thresholds, expected results, or the production path under test.",
+      "impact": "Recursive optimization can converge on an easier test rather than a better system.",
+      "required_fix": "Add path allow-lists, immutable-file hash checks, benchmark-owner approval for rubric changes, and a diff audit before every acceptance decision.",
+      "acceptance_test": "Edits to held-out data, expected results, hard gates, thresholds, or out-of-scope runtime paths abort the candidate."
+    },
+    {
+      "id": "B14_SYMBOLIC_FIXTURES_DO_NOT_PROVE_EDGE_CASES",
+      "severity": "high",
+      "category": "weak_feature_coverage",
+      "observation": "Many fixtures are descriptive strings rather than versioned files with known rows, schemas, corruptions, and expected calculations.",
+      "evidence": ["benchmark_suite/catalog.py:_CATALOG fixture fields"],
+      "exploit": "An evaluator can interpret a fixture name loosely or return a canned result.",
+      "impact": "Agent contracts, retries, credentials, checkpoints, and analytical traps are not reproducibly exercised.",
+      "required_fix": "Back every case with a content-addressed fixture or deterministic factory and explicit oracle; include empty, null-heavy, duplicate, many-to-many, imbalance, leakage, wrong-denominator, and path-boundary cases.",
+      "acceptance_test": "Catalog validation resolves every fixture and oracle hash and rejects labels with no implementation."
+    },
+    {
+      "id": "B15_NO_PAIRED_REGRESSION_ACCEPTANCE_RULE",
+      "severity": "high",
+      "category": "recursive_acceptance",
+      "observation": "The proposal has no exact paired rule for accepting improvements across routes, cases, dimensions, latency, and hard gates.",
+      "evidence": ["optimizer_a_proposal.json:acceptance_policy"],
+      "exploit": "A large gain on one easy output can hide several smaller agent or route regressions.",
+      "impact": "Back-and-forth optimization can oscillate or sacrifice coverage while aggregate score rises.",
+      "required_fix": "Require all hard gates, zero new case failures, no dimension below its frozen floor, no material per-route regression, and a positive held-out paired delta before acceptance; record rollback decision.",
+      "acceptance_test": "A candidate with higher aggregate score but one new case failure or one route regression is rejected."
+    }
+  ],
+  "round_2_required_actions": [
+    {
+      "id": "R2_01",
+      "owner": "optimizer_a",
+      "action": "Raise and freeze report-route acceptance at or above 76/90 and add threshold/weight anti-weakening tests.",
+      "proof": "Historical boundary cases and invariant tests."
+    },
+    {
+      "id": "R2_02",
+      "owner": "optimizer_a",
+      "action": "Replace string-presence evidence with typed, confined, hash-bound, resolvable evidence locators.",
+      "proof": "Fabricated, stale, cross-run, and wrong-type locator negative tests."
+    },
+    {
+      "id": "R2_03",
+      "owner": "optimizer_a",
+      "action": "Replace raw gate booleans with independent evaluator receipts and route-specific provenance validation.",
+      "proof": "Self-asserted and stale-receipt negative tests."
+    },
+    {
+      "id": "R2_04",
+      "owner": "benchmark_architect",
+      "action": "Create content-addressed development and genuinely frozen held-out fixture/oracle manifests.",
+      "proof": "Tamper test and aggregate-only held-out result handoff."
+    },
+    {
+      "id": "R2_05",
+      "owner": "workflow_evaluator",
+      "action": "Enforce complete evaluator/fixture registry coverage with zero skips in acceptance mode.",
+      "proof": "Missing-registration tests and executed receipt per catalog ID."
+    },
+    {
+      "id": "R2_06",
+      "owner": "optimizer_a",
+      "action": "Add criterion anchors, rater provenance, calibration, and semantic negative controls for all four output dimensions.",
+      "proof": "Calibration receipt plus keyword-rich false-positive cases."
+    },
+    {
+      "id": "R2_07",
+      "owner": "workflow_evaluator",
+      "action": "Add rendered artifact coverage matrices for every page, slide, dashboard page, viewport, and key filter state.",
+      "proof": "Late-page, narrow-viewport, filtered-empty, clipping, overlap, and blank-visual mutations."
+    },
+    {
+      "id": "R2_08",
+      "owner": "optimizer_a",
+      "action": "Define comparable iteration fingerprints, three-run stability checks, and paired acceptance/rollback rules.",
+      "proof": "Environment mismatch, alternating evaluator, and aggregate-gain-with-regression tests."
+    },
+    {
+      "id": "R2_09",
+      "owner": "optimizer_a",
+      "action": "Enforce optimizer path ownership and immutable benchmark hashes before scoring.",
+      "proof": "Forbidden diff and held-out tamper tests."
+    },
+    {
+      "id": "R2_10",
+      "owner": "workflow_evaluator",
+      "action": "Run legacy report gates in parallel until mutation-based equivalence of every crosswalk entry is proven.",
+      "proof": "One semantic mutation per legacy criterion with matching fail verdicts."
+    }
+  ],
+  "preserved_invariants": {
+    "minimum_analytics_report_normalized_threshold": 0.8444444444444444,
+    "hard_gates": [
+      "critical_workflow_free",
+      "unsupported_claims_absent",
+      "high_stakes_safety_clear",
+      "evidence_consistent",
+      "calculations_valid",
+      "artifacts_openable",
+      "artifact_qa_passed",
+      "primary_visuals_render",
+      "sensitive_data_protected"
+    ],
+    "max_recursive_iterations": 3,
+    "production_runtime_edits_authorized": false,
+    "held_out_expected_result_edits_authorized": false
+  },
+  "handoff": {
+    "next_agent": "optimizer_a",
+    "next_round": 2,
+    "accept_pass_1": false,
+    "minimum_findings_to_close": 15,
+    "instruction": "Respond in a new pass-2 artifact; do not rewrite the pass-1 proposal or this critique. Close each finding with code and a focused negative test, or explicitly defer it as a blocker."
+  }
+}

@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -11,7 +12,7 @@ from analytics_workflow.decision_tree_figure import (
     decision_tree_performance_note,
     humanize_decision_tree_condition,
 )
-from analytics_workflow.pipeline_runtime import MultiAgentOrchestrator
+from analytics_workflow.pipeline_runtime import MultiAgentOrchestrator, resume_non_interactive_workflow
 from analytics_workflow.runtime_config import build_runtime_config
 
 
@@ -72,6 +73,123 @@ class AnalysisLoopValidationTests(unittest.TestCase):
             },
         ]
 
+    def test_csv_ingestion_enforces_file_size_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = Path(temp_dir) / "large.csv"
+            csv_path.write_text("value\n1234567890\n", encoding="utf-8")
+            config = build_runtime_config("openrouter-secret", "brave-secret", max_csv_bytes=8)
+            orchestrator = MultiAgentOrchestrator(config)
+            self.assertFalse(orchestrator.load_csv_paths([csv_path]))
+            self.assertEqual(orchestrator.workflow_state["csv_data"], {})
+
+    def test_duplicate_dataset_keys_use_stable_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_dir = Path(temp_dir) / "first"
+            second_dir = Path(temp_dir) / "second"
+            first_dir.mkdir()
+            second_dir.mkdir()
+            first = first_dir / "sample.csv"
+            second = second_dir / "sample.csv"
+            first.write_text("value\n1\n", encoding="utf-8")
+            second.write_text("value\n2\n", encoding="utf-8")
+            keys: list[list[str]] = []
+            for _ in range(2):
+                orchestrator = MultiAgentOrchestrator(build_runtime_config("x", "y"))
+                self.assertTrue(orchestrator.load_csv_paths([first, second]))
+                keys.append(list(orchestrator.workflow_state["csv_data"]))
+            self.assertEqual(keys[0], keys[1])
+            self.assertRegex(keys[0][1], r"sample_[0-9a-f]{10}\.csv")
+
+    def test_run_manifest_and_final_code_are_persisted_per_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestrator = MultiAgentOrchestrator(build_runtime_config("x", "y"), workspace=Path(temp_dir))
+            orchestrator._update_run_manifest(final_code="analysis_summary = {}\n")
+            run_dir = Path(orchestrator.workflow_state["run_manifest"]["run_directory"])
+            self.assertTrue((run_dir / "run_manifest.json").exists())
+            self.assertEqual((run_dir / "final_analysis.py").read_text(encoding="utf-8"), "analysis_summary = {}\n")
+
+    def test_step_telemetry_is_checkpointed_with_usage_and_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestrator = MultiAgentOrchestrator(build_runtime_config("x", "y"), workspace=Path(temp_dir))
+            orchestrator._set_step(1, "running")
+            orchestrator.openrouter_client.cost_tracker.record(120, 30)
+            orchestrator._set_step(1, "done")
+
+            run_dir = Path(orchestrator.workflow_state["run_manifest"]["run_directory"])
+            manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual([event["status"] for event in manifest["step_events"]], ["running", "done"])
+            metric = manifest["step_metrics"][-1]
+            self.assertEqual(metric["step"], 1)
+            self.assertEqual(metric["api_calls"], 1)
+            self.assertEqual(metric["prompt_tokens"], 120)
+            self.assertGreaterEqual(metric["duration_ms"], 0)
+            self.assertEqual(manifest["usage"]["total_tokens"], 150)
+
+    def test_parallel_export_step_cannot_regress_current_step(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestrator = MultiAgentOrchestrator(build_runtime_config("x", "y"), workspace=Path(temp_dir))
+            orchestrator._set_step(8, "running")
+            orchestrator._set_step(9, "running")
+            orchestrator._set_step(8, "done")
+            self.assertEqual(orchestrator.workflow_state["current_step"], 9)
+
+    def test_resume_loads_persisted_outputs_and_original_run_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            csv_path = workspace / "sample.csv"
+            csv_path.write_text("value\n1\n2\n", encoding="utf-8")
+            original = MultiAgentOrchestrator(build_runtime_config("x", "y"), workspace=workspace)
+            self.assertTrue(original.load_csv_paths([csv_path]))
+            original.workflow_state["agent_outputs"]["data_understander"] = {"cached": True}
+            original.workflow_state["analysis_results"] = {"execution_status": "success"}
+            original.set_user_data_description("Resume this analysis")
+            original._update_run_manifest()
+            run_dir = original.run_dir
+
+            with patch.object(
+                MultiAgentOrchestrator,
+                "execute_workflow",
+                autospec=True,
+                side_effect=lambda instance: instance.workflow_state,
+            ) as execute:
+                result = resume_non_interactive_workflow(build_runtime_config("x", "y"), run_dir)
+
+            resumed = execute.call_args.args[0]
+            self.assertEqual(resumed.run_dir, run_dir)
+            self.assertEqual(result["agent_outputs"]["data_understander"], {"cached": True})
+            self.assertEqual(result["user_data_description"], "Resume this analysis")
+            self.assertIn("sample.csv", result["csv_data"])
+
+    def test_market_sources_are_reconciled_to_canonical_search_results(self) -> None:
+        researcher = self.orchestrator.agents["market_researcher"]
+        canonical = [
+            {
+                "index": 1,
+                "title": "Canonical title",
+                "url": "https://example.com/source",
+                "description": "Canonical snippet",
+                "query": "market query",
+                "evidence_level": "search_snippet",
+            }
+        ]
+        reconciled = researcher._reconcile_sources(
+            {
+                "industry_overview": "Overview",
+                "market_findings": [
+                    {"claim": "Supported claim", "source_index": 1},
+                    {"claim": "Invented claim", "source_index": 99},
+                ],
+                "sources_cited": [
+                    {"index": 1, "title": "Invented title", "url": "https://malicious.invalid"}
+                ],
+            },
+            canonical,
+            ["market query"],
+        )
+        self.assertEqual(reconciled["sources_cited"], canonical)
+        self.assertEqual([item["claim"] for item in reconciled["market_findings"]], ["Supported claim"])
+        self.assertTrue(reconciled["source_validation_warnings"])
+
     def test_decision_tree_performance_note_caveats_high_baseline_accuracy(self) -> None:
         note = decision_tree_performance_note(
             {
@@ -86,6 +204,20 @@ class AnalysisLoopValidationTests(unittest.TestCase):
         self.assertIn("likely small positive class", note)
         self.assertIn("precision/recall/F1", note)
         self.assertIn("not as diagnostic or deployment-ready", note)
+
+    def test_exploratory_screening_caveat_satisfies_underperformance_guard(self) -> None:
+        artifact = {
+            "finding": (
+                "Exploratory screening only: accuracy is 97.1% versus baseline 97.5%; "
+                "this is not deployment-ready performance."
+            ),
+            "data": {
+                "model_type": "classification",
+                "test_accuracy": 0.971,
+                "baseline_accuracy": 0.975,
+            },
+        }
+        self.assertFalse(self.orchestrator._decision_tree_artifact_underperforms_without_warning(artifact))
 
     def test_decision_tree_conditions_hide_model_scaled_thresholds_from_readers(self) -> None:
         self.assertEqual(
@@ -347,7 +479,12 @@ analysis_artifacts = [
             self.assertFalse(any("Decision tree artifact" in issue for issue in issues))
             self.assertFalse(any("not marked as verified" in issue for issue in issues))
 
-    def test_execute_code_recovers_valid_outputs_after_late_tree_internal_error(self) -> None:
+    def test_runtime_tree_discovery_ignores_pipeline_classes(self) -> None:
+        from sklearn.pipeline import Pipeline
+
+        self.assertIsNone(self.orchestrator._tree_estimator(Pipeline))
+
+    def test_execute_code_fails_closed_after_late_tree_internal_error(self) -> None:
         self.orchestrator.set_decision_tree_target_column("risk")
         code = """
 from sklearn.tree import DecisionTreeClassifier
@@ -430,15 +567,9 @@ raise AttributeError("'property' object has no attribute 'values'")
             finally:
                 os.chdir(cwd)
 
-            self.assertEqual(result["execution_status"], "success")
-            self.assertIn("recovered_from_error", result)
-            tree_artifact = next(item for item in result["analysis_artifacts"] if item["chart_type"] == "decision_tree")
-            self.assertTrue(tree_artifact["data"]["model_verified"])
-            self.assertIn("train_accuracy", tree_artifact["data"])
-            self.assertIn("test_accuracy", tree_artifact["data"])
-            tree_names = [Path(path).name for path in result["figures_generated"] if Path(path).name.startswith("decision_tree_rules")]
-            self.assertTrue(tree_names)
-            self.assertFalse(any(name.startswith("decision_tree_rules_5") for name in tree_names))
+            self.assertEqual(result["execution_status"], "failed")
+            self.assertIn("property", result["error"])
+            self.assertNotIn("recovered_from_error", result)
 
     def test_build_sklearn_tree_artifact_accepts_fitted_pipeline(self) -> None:
         from sklearn.compose import ColumnTransformer
@@ -999,7 +1130,11 @@ model_pipeline.fit
         self.orchestrator.agents["presentation_architect"] = type(
             "StubAgent",
             (),
-            {"execute": lambda self, *args, **kwargs: {"presentation_title": "Deck", "presentation_subtitle": "Sub", "slides": []}},
+            {
+                "execute": lambda self, *args, **kwargs: (_ for _ in ()).throw(
+                    RuntimeError("invalid slide plan JSON")
+                )
+            },
         )()
 
         self.orchestrator._coding_loop = lambda plan: (
@@ -1035,6 +1170,16 @@ model_pipeline.fit
             result = self.orchestrator.execute_workflow()
 
         self.assertEqual(result["status"], "completed")
+        persisted_manifest = json.loads(
+            (self.orchestrator.run_dir / "run_manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(persisted_manifest["status"], "completed")
+        self.assertIn("completed_at", persisted_manifest)
+        self.assertGreaterEqual(persisted_manifest["run_duration_ms"], 0)
+        self.assertEqual(
+            result["agent_outputs"]["presentation_architect"]["design_source"],
+            "deterministic_hybrid",
+        )
 
     def test_execute_code_provides_df_alias_for_single_dataset(self) -> None:
         import pandas as pd
@@ -1372,6 +1517,72 @@ model_pipeline.fit
         self.assertIn("Unsafe analysis code blocked", result["error"])
         self.assertTrue(any("subprocess" in issue for issue in result.get("safety_issues", [])))
 
+    def test_execute_code_times_out_in_isolated_worker(self) -> None:
+        config = build_runtime_config("openrouter-secret", "brave-secret", analysis_timeout_seconds=1)
+        orchestrator = MultiAgentOrchestrator(config)
+        result = orchestrator._execute_code(
+            "analysis_summary = {'rows': 1, 'metric': 1}\n"
+            "business_findings = ['One row.']\n"
+            "figure_captions = {}\n"
+            "analysis_artifacts = []\n"
+            "while True:\n    pass\n"
+        )
+        self.assertEqual(result["execution_status"], "failed")
+        self.assertTrue(result.get("timed_out"))
+
+    def test_execute_code_blocks_dataframe_reads_outside_run_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            protected_path = Path(temp_dir) / "protected.csv"
+            protected_path.write_text("secret\nvalue\n", encoding="utf-8")
+            result = self.orchestrator._execute_code(
+                f"stolen = pd.read_csv({str(protected_path)!r})\n"
+                "analysis_summary = {'rows': 1, 'metric': 1}\n"
+                "business_findings = ['One row.']\n"
+                "figure_captions = {}\n"
+                "analysis_artifacts = []\n"
+            )
+        self.assertEqual(result["execution_status"], "failed")
+        self.assertIn("blocked read outside run directory", result["error"])
+
+    def test_execute_code_blocks_network_access_from_dataframe_helpers(self) -> None:
+        result = self.orchestrator._execute_code(
+            "remote = pd.read_csv('http://127.0.0.1:9/private.csv')\n"
+            "analysis_summary = {'rows': 1, 'metric': 1}\n"
+            "business_findings = ['One row.']\n"
+            "figure_captions = {}\n"
+            "analysis_artifacts = []\n"
+        )
+        self.assertEqual(result["execution_status"], "failed")
+        self.assertIn("sandbox blocked", result["error"])
+
+    def test_retry_context_captures_exact_failing_source_lines(self) -> None:
+        code = "first = 1\nsecond = {}\nvalue = second['missing']\nfourth = 4\n"
+        context = self.orchestrator._code_failure_context(
+            code,
+            'Traceback\n  File "<string>", line 3, in <module>\nKeyError: missing',
+            "'missing'",
+        )
+        self.assertEqual(context["line"], 3)
+        self.assertIn("3: value = second['missing']", context["source"])
+
+    def test_preflight_rejects_quoted_keys_for_numeric_binary_target(self) -> None:
+        import pandas as pd
+
+        self.orchestrator.workflow_state["csv_data"] = {
+            "sample.csv": pd.DataFrame({"depression_label": [0, 1], "value": [2, 3]})
+        }
+        self.orchestrator.set_decision_tree_target_column("depression_label")
+        issues = self.orchestrator._analysis_code_preflight_issues(
+            "summary = grouped.to_dict()\nvalue = summary['1']\n"
+        )
+        self.assertTrue(any("integer 0/1 keys" in issue for issue in issues))
+
+    def test_preflight_rejects_unguarded_literal_category_position(self) -> None:
+        issues = self.orchestrator._analysis_code_preflight_issues(
+            "value = grouped.loc[grouped['segment'] == 'Invented', 'rate'].values[0]\n"
+        )
+        self.assertTrue(any("literal category" in issue for issue in issues))
+
     def test_execute_code_fails_when_required_outputs_are_missing(self) -> None:
         import pandas as pd
 
@@ -1494,7 +1705,7 @@ model_pipeline.fit
         self.assertIn("Unsafe analysis code blocked", result["error"])
         self.assertTrue(any("definitely_missing_lib_xyz" in issue for issue in result.get("safety_issues", [])))
 
-    def test_execute_code_installs_missing_approved_package_before_running(self) -> None:
+    def test_execute_code_never_installs_missing_packages_at_runtime(self) -> None:
         import pandas as pd
 
         self.orchestrator.workflow_state["csv_data"] = {
@@ -1515,11 +1726,11 @@ model_pipeline.fit
         ) as install:
             result = self.orchestrator._execute_code(code)
 
-        self.assertEqual(result["execution_status"], "success")
-        install.assert_called_once()
-        self.assertIn("numpy", install.call_args.args[0])
+        self.assertEqual(result["execution_status"], "failed")
+        self.assertIn("runtime installation is disabled", result["error"])
+        install.assert_not_called()
 
-    def test_execute_code_reports_failed_approved_package_install(self) -> None:
+    def test_execute_code_reports_missing_approved_dependency_without_installing(self) -> None:
         import pandas as pd
 
         self.orchestrator.workflow_state["csv_data"] = {
@@ -1532,7 +1743,7 @@ model_pipeline.fit
             result = self.orchestrator._execute_code("import plotly\n")
 
         self.assertEqual(result["execution_status"], "failed")
-        self.assertIn("Approved package install failed", result["error"])
+        self.assertIn("runtime installation is disabled", result["error"])
         self.assertEqual(result.get("missing_module"), "plotly")
 
     def test_coding_loop_raises_if_no_runnable_code_is_generated(self) -> None:
@@ -1778,7 +1989,7 @@ class CoderExtractionTests(unittest.TestCase):
         self.assertTrue(any("waiting for model code (iteration 2, attempt 1/2)" in status for status in statuses))
         self.assertTrue(any("model code received (iteration 2, attempt 1/2)" in status for status in statuses))
 
-    def test_dataset_generation_context_profiles_values_for_code_fit(self) -> None:
+    def test_dataset_generation_context_redacts_values_by_default(self) -> None:
         import pandas as pd
         coder = DataScientistCoderAgent(
             "Data Scientist Coder",
@@ -1801,10 +2012,18 @@ class CoderExtractionTests(unittest.TestCase):
 
         self.assertEqual(context["shape"], [4, 3])
         self.assertEqual(context["profiled_columns"]["customer_id"]["role_hint"], "identifier")
-        self.assertEqual(context["profiled_columns"]["segment"]["sample_values"], ["A", "B", "A"])
+        self.assertEqual(context["profiled_columns"]["segment"]["sample_values"], [])
+        self.assertEqual(context["sample_rows"], [])
+        self.assertFalse(context["sample_values_shared"])
         self.assertEqual(context["profiled_columns"]["value"]["role_hint"], "numeric-discrete")
         self.assertEqual(context["profiled_columns"]["value"]["missing_pct"], 25.0)
         self.assertEqual(context["profiled_columns"]["value"]["numeric_range"]["max"], 15.0)
+
+        coder.set_shared_context(share_sample_values_with_model=True)
+        opted_in = coder._dataset_generation_context(
+            {"sample.csv": pd.DataFrame({"segment": ["A", "B", "A"]})}
+        )["sample.csv"]
+        self.assertEqual(opted_in["profiled_columns"]["segment"]["sample_values"], ["A", "B", "A"])
 
     def test_extract_code_skips_explanatory_preamble(self) -> None:
         coder = DataScientistCoderAgent(

@@ -1,0 +1,40 @@
+{
+  "execution_logs": [
+    {
+      "task_id": "pilot-step-1",
+      "agent_id": "data_understander",
+      "task_type": "analytics_workflow_step",
+      "task_description": "Data Understander",
+      "start_time": "2026-07-12T00:00:00Z",
+      "end_time": "2026-07-12T00:00:01Z",
+      "duration_ms": 1000,
+      "status": "success",
+      "actions": [],
+      "results": {"quality_score": 1.0},
+      "tokens_used": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125},
+      "cost_usd": 0.001,
+      "error_details": null,
+      "tools_used": [],
+      "retry_count": 0,
+      "metadata": {"run_id": "pilot"}
+    },
+    {
+      "task_id": "pilot-step-9",
+      "agent_id": "slide_deck_generator",
+      "task_type": "analytics_workflow_step",
+      "task_description": "Slide Deck Generator",
+      "start_time": "2026-07-12T00:00:01Z",
+      "end_time": "2026-07-12T00:00:03Z",
+      "duration_ms": 2000,
+      "status": "success",
+      "actions": [],
+      "results": {"quality_score": 1.0},
+      "tokens_used": {"input_tokens": 200, "output_tokens": 50, "total_tokens": 250},
+      "cost_usd": 0.002,
+      "error_details": null,
+      "tools_used": [],
+      "retry_count": 0,
+      "metadata": {"run_id": "pilot"}
+    }
+  ]
+}

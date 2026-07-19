@@ -15,6 +15,13 @@ from .validators import repair_deck_spec, validate_deck_spec
 
 
 def build_deck_spec(workflow_state: dict[str, Any]) -> DeckSpec:
+    ppt_mcp_spec = workflow_state.get("ppt_mcp_deck_spec")
+    if isinstance(ppt_mcp_spec, dict) and ppt_mcp_spec.get("slides"):
+        deck = DeckSpec.from_any(ppt_mcp_spec)
+        deck.metadata = {**deck.metadata, "design_source": "ppt_mcp"}
+        _confine_external_deck_visuals(deck, workflow_state)
+        return _finalize_deck(deck, workflow_state, legacy_warnings=[], polish=False)
+
     outputs = workflow_state.get("agent_outputs", {}) or {}
     plan = outputs.get("presentation_architect", {}) or {}
     dataset_context = _dataset_context(workflow_state)
@@ -56,8 +63,20 @@ def build_deck_spec(workflow_state: dict[str, Any]) -> DeckSpec:
         _limitations_slide(workflow_state, legacy_by_role),
         _summary_slide(workflow_state, legacy_by_role),
     ]
+    return _finalize_deck(deck, workflow_state, legacy_warnings=legacy_warnings)
+
+
+def _finalize_deck(
+    deck: DeckSpec,
+    workflow_state: dict[str, Any],
+    *,
+    legacy_warnings: list[dict[str, Any]],
+    polish: bool = True,
+) -> DeckSpec:
     deck.renumber()
-    _polish_deck_slides(deck)
+    _attach_evidence_metadata(deck, workflow_state)
+    if polish:
+        _polish_deck_slides(deck)
     preexisting_warnings = list(workflow_state.get("slide_validation_warnings", []) or [])
     pre_repair_warnings = [
         {**warning, "phase": "pre_repair"}
@@ -65,7 +84,8 @@ def build_deck_spec(workflow_state: dict[str, Any]) -> DeckSpec:
         if isinstance(warning, dict)
     ]
     repair_deck_spec(deck)
-    _polish_deck_slides(deck)
+    if polish:
+        _polish_deck_slides(deck)
     post_repair_warnings = [
         {**warning, "phase": "post_repair"}
         for warning in validate_deck_spec(deck)
@@ -79,12 +99,129 @@ def build_deck_spec(workflow_state: dict[str, Any]) -> DeckSpec:
     return deck
 
 
+def _attach_evidence_metadata(deck: DeckSpec, workflow_state: dict[str, Any]) -> None:
+    bundle = workflow_state.get("evidence_bundle", {}) or {}
+    records = {
+        compact_whitespace(item.get("evidence_id")): item
+        for item in bundle.get("evidence", []) or []
+        if isinstance(item, dict) and compact_whitespace(item.get("evidence_id"))
+    }
+    dataset_source_ids = [
+        compact_whitespace(item.get("source_id"))
+        for item in bundle.get("datasets", []) or []
+        if isinstance(item, dict) and compact_whitespace(item.get("source_id"))
+    ]
+    recommendations = (
+        workflow_state.get("agent_outputs", {}).get("decision_maker", {}).get("recommendations", []) or []
+    )
+    recommendation_ids = [
+        compact_whitespace(evidence_id)
+        for item in recommendations
+        if isinstance(item, dict)
+        for evidence_id in item.get("evidence_ids", []) or []
+        if compact_whitespace(evidence_id)
+    ]
+    high_stakes = bool(bundle.get("high_stakes"))
+    for slide in deck.slides:
+        evidence_ids: list[str] = []
+        if slide.visual is not None:
+            visual_id = compact_whitespace(slide.visual.artifact_id or slide.visual.chart_spec_id)
+            if visual_id and visual_id in records:
+                record = records[visual_id]
+                evidence_ids.append(visual_id)
+                slide.visual.evidence_ids = [visual_id]
+                slide.visual.source_ids = list(record.get("source_ids", []) or dataset_source_ids)
+                slide.visual.sample_size = record.get("sample_size") if isinstance(record.get("sample_size"), int) else None
+                slide.visual.denominator = compact_whitespace(record.get("denominator"))
+                slide.visual.method = compact_whitespace(record.get("method"))
+                slide.visual.confidence = compact_whitespace(record.get("confidence"))
+                slide.visual.caveat = shorten(record.get("caveat", ""), 180)
+        if slide.slide_role == "data_understanding":
+            slide.source_ids = dataset_source_ids
+        elif slide.slide_role == "recommendations":
+            evidence_ids.extend(recommendation_ids)
+        elif slide.slide_role in {"limitations", "summary", "ending"}:
+            evidence_ids.extend(list(records)[:4])
+        slide.evidence_ids = list(dict.fromkeys(evidence_ids))[:5]
+        slide.source_ids = list(
+            dict.fromkeys(
+                slide.source_ids
+                + [source for evidence_id in slide.evidence_ids for source in records.get(evidence_id, {}).get("source_ids", [])]
+            )
+        )[:5]
+        slide.decision_status = "human_review_required" if high_stakes and slide.slide_role in {"recommendations", "summary", "ending"} else "validation_required" if slide.slide_role == "recommendations" else ""
+        caveats = [records[item].get("caveat", "") for item in slide.evidence_ids if item in records and records[item].get("caveat")]
+        slide.caveat = shorten(first_nonempty(*caveats), 180)
+        note_parts = []
+        if slide.evidence_ids:
+            note_parts.append("Evidence: " + ", ".join(slide.evidence_ids))
+        if slide.source_ids:
+            note_parts.append("Sources: " + ", ".join(slide.source_ids))
+        detail_bits: list[str] = []
+        for evidence_id in slide.evidence_ids[:3]:
+            record = records.get(evidence_id, {})
+            if record.get("method"):
+                detail_bits.append(f"{evidence_id} method={record.get('method')}")
+            if record.get("sample_size"):
+                detail_bits.append(f"n={record.get('sample_size')}")
+            if record.get("denominator"):
+                detail_bits.append(f"denominator={record.get('denominator')}")
+        if detail_bits:
+            note_parts.append("; ".join(detail_bits))
+        if slide.caveat:
+            note_parts.append("Caveat: " + slide.caveat)
+        slide.speaker_note = shorten(" | ".join(note_parts), 220)
+
+
+def _confine_external_deck_visuals(deck: DeckSpec, workflow_state: dict[str, Any]) -> None:
+    allowed_paths = {
+        str(Path(str(path)).resolve())
+        for path in (
+            list(workflow_state.get("saved_figures", []) or [])
+            + list(workflow_state.get("analysis_results", {}).get("figures_generated", []) or [])
+        )
+        if path
+    }
+    for slide in deck.slides:
+        visual = slide.visual
+        if not visual or not visual.image_path:
+            continue
+        try:
+            resolved = str(Path(visual.image_path).resolve())
+        except OSError:
+            resolved = ""
+        if resolved not in allowed_paths:
+            slide.visual = None
+        else:
+            visual.image_path = resolved
+
+
 def _metadata(workflow_state: dict[str, Any]) -> dict[str, Any]:
     manifest = workflow_state.get("run_manifest", {}) or {}
+    bundle = workflow_state.get("evidence_bundle", {}) or {}
     return {
         "generated_by": "Multi-Agent Analytics System",
         "generated_on": datetime.now().strftime("%B %d, %Y"),
         "run_id": manifest.get("run_id", ""),
+        "evidence_bundle_hash": bundle.get("bundle_hash", ""),
+        "evidence_sources": {
+            "datasets": list(bundle.get("datasets", []) or []),
+            "external_sources": list(bundle.get("external_sources", []) or []),
+            "evidence_ids": [
+                compact_whitespace(item.get("evidence_id"))
+                for item in bundle.get("evidence", []) or []
+                if isinstance(item, dict) and compact_whitespace(item.get("evidence_id"))
+            ],
+            "quality_status": (workflow_state.get("quality_receipt", {}) or {}).get("status", ""),
+        },
+        "recommendation_execution": [
+            {
+                key: item.get(key, "")
+                for key in ("rank", "action", "owner", "trigger", "validation_metric", "stop_condition", "timeline", "evidence_ids")
+            }
+            for item in workflow_state.get("agent_outputs", {}).get("decision_maker", {}).get("recommendations", []) or []
+            if isinstance(item, dict)
+        ][:3],
     }
 
 
@@ -283,6 +420,14 @@ def _data_understanding_slide(workflow_state: dict[str, Any], legacy: dict[str, 
         metrics.append({"label": "Columns", "value": str(context.get("columns"))})
     if context.get("target"):
         metrics.append({"label": "Target", "value": str(context.get("target"))})
+    quality_status = compact_whitespace((workflow_state.get("quality_receipt", {}) or {}).get("status"))
+    if quality_status:
+        metrics.append({"label": "Quality", "value": quality_status.replace("_", " ").title()})
+    for metric in _summary_metrics(workflow_state):
+        if len(metrics) >= 4:
+            break
+        if not any(item.get("label") == metric.get("label") for item in metrics):
+            metrics.append(metric)
     key_fields = context.get("key_fields", []) or []
     fields = ", ".join(key_fields[:8])
     bullets = refine_bullets(
@@ -309,7 +454,7 @@ def _data_understanding_slide(workflow_state: dict[str, Any], legacy: dict[str, 
 
 def _data_understanding_headline(workflow_state: dict[str, Any]) -> str:
     if workflow_state.get("decision_tree_target_column"):
-        return "The dataset supports a structured screening review"
+        return "The dataset supports a structured evidence review"
     return "The dataset is ready to support a focused decision review"
 
 
@@ -328,8 +473,22 @@ def _market_context_slide(workflow_state: dict[str, Any], legacy: dict[str, list
             max_chars=150,
         )
     elif _has_cited_market_context(market):
-        headline = "Domain context uses cited market evidence"
+        if str(market.get("market_evidence_level", "")).lower() == "search_snippet":
+            headline = "External context is directional and requires source-page review"
+        else:
+            headline = "Domain context uses cited market evidence"
         bullets = _cited_market_bullets(market)
+    elif market.get("sources_cited"):
+        headline = "External sources were captured, but their claims require review"
+        bullets = refine_bullets(
+            [
+                f"[{source.get('index', index)}] {source.get('title', 'External source')} - search-snippet context only."
+                for index, source in enumerate(market.get("sources_cited", [])[:3], start=1)
+                if isinstance(source, dict)
+            ],
+            max_items=3,
+            max_chars=150,
+        )
     else:
         headline = "Domain context uses dataset-grounded assumptions"
         bullets = refine_bullets(
@@ -721,13 +880,14 @@ def _limitations_slide(workflow_state: dict[str, Any], legacy: dict[str, list[Sl
     analysis = workflow_state.get("analysis_results", {}) or {}
     warnings = workflow_state.get("analysis_artifact_warnings", []) or []
     decision_limits = decision.get("limitations", []) or decision.get("risks", []) or []
+    decision_limit_details = _decision_limitation_details(decision_limits)
     summary_limits = _analysis_limitations(analysis.get("analysis_summary", {}) or {})
     tree_visual = _decision_tree_visual(workflow_state)
     model_caveat = _decision_tree_caveat(tree_visual) if tree_visual else ""
     bullets = _simple_slide_bullets(
         [model_caveat]
         + list(objective.get("limitations", []) if isinstance(objective, dict) else [])
-        + decision_limits
+        + decision_limit_details
         + business.get("risks", [])
         + summary_limits
         + warnings,
@@ -745,6 +905,26 @@ def _limitations_slide(workflow_state: dict[str, Any], legacy: dict[str, list[Sl
         content_blocks=[ContentBlock(type="limitations", items=bullets)],
     )
     return _merge_slide(existing, slide)
+
+
+def _decision_limitation_details(items: Any) -> list[str]:
+    details: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            details.append(str(item))
+            continue
+        limitation = compact_whitespace(item.get("limitation") or item.get("risk"))
+        mitigation = compact_whitespace(item.get("mitigation"))
+        decision_impact = compact_whitespace(item.get("decision_impact"))
+        if limitation:
+            details.append(limitation)
+        if mitigation:
+            details.append(f"Mitigation: {mitigation}")
+        elif decision_impact:
+            details.append(f"Decision impact: {decision_impact}")
+        if len(details) >= 4:
+            break
+    return details[:4]
 
 
 def _summary_slide(workflow_state: dict[str, Any], legacy: dict[str, list[SlideSpec]]) -> SlideSpec:
@@ -1341,60 +1521,33 @@ def _analysis_artifact_queue(workflow_state: dict[str, Any]) -> list[VisualSpec]
         for spec in structured_sources
         if isinstance(spec, dict) and compact_whitespace(spec.get("chart_type")).lower() == "decision_tree"
     ]
-    if has_decision_tree and non_tree_sources:
-        for spec in sorted(non_tree_sources, key=_visual_relevance_score, reverse=True)[:3]:
-            visual = VisualSpec.from_any({"type": "structured_chart", **spec}) if isinstance(spec, dict) else None
-            if not visual:
-                continue
-            key = visual.artifact_id or visual.chart_spec_id or visual.title or str(len(visuals))
-            if key in seen:
-                continue
-            signature = _visual_semantic_signature(visual)
-            if signature and signature in seen_visual_signatures:
-                continue
-            if not has_structured_chart_data(visual):
-                invalid_structured_visuals.append(key)
-                continue
-            if visual.recommended_template not in TEMPLATE_REGISTRY:
-                visual.recommended_template = _template_for_chart_type(visual.chart_type)
-            seen.add(key)
-            if signature:
-                seen_visual_signatures.add(signature)
-            visuals.append(visual)
-    max_code_figures = 0 if has_decision_tree and len(visuals) >= 3 else (2 if has_decision_tree and non_tree_sources else (3 if has_decision_tree else 4))
     figure_paths = list(workflow_state.get("saved_figures", []) or analysis.get("figures_generated", []) or [])
     figure_paths = sorted(
         figure_paths,
         key=lambda path: _figure_visual_priority(workflow_state, path, _caption_for_figure(path, captions)),
     )
-    if max_code_figures > 0:
-        for path in figure_paths:
-            if not path or not Path(str(path)).exists() or str(path) in seen:
-                continue
-            if has_decision_tree and Path(str(path)).name.lower().startswith("decision_tree_rules"):
-                continue
-            caption = _caption_for_figure(path, captions)
-            visual = VisualSpec(
-                type="code_figure",
-                chart_type="code_figure",
-                title=_figure_title(path, caption),
-                takeaway=shorten(caption, 150),
-                finding=shorten(caption, 180),
-                image_path=str(path),
-            )
-            signature = _visual_semantic_signature(visual)
-            if signature and signature in seen_visual_signatures:
-                continue
-            seen.add(str(path))
-            if signature:
-                seen_visual_signatures.add(signature)
-            visuals.append(
-                visual
-            )
-            if len(visuals) >= max_code_figures and has_decision_tree:
-                break
-            if len(visuals) >= max_code_figures:
-                return visuals
+    max_code_figures = 3 if has_decision_tree and tree_sources else 4
+    for path in figure_paths:
+        if len(visuals) >= max_code_figures:
+            break
+        if not path or not Path(str(path)).exists() or str(path) in seen:
+            continue
+        if has_decision_tree and Path(str(path)).name.lower().startswith("decision_tree_rules"):
+            continue
+        caption = _caption_for_figure(path, captions)
+        matched_artifact = _match_figure_artifact(caption, structured_sources)
+        visual = VisualSpec(
+            type="code_figure",
+            chart_type=compact_whitespace(matched_artifact.get("chart_type")) or "code_figure",
+            artifact_id=compact_whitespace(matched_artifact.get("artifact_id") or matched_artifact.get("id")),
+            chart_spec_id=compact_whitespace(matched_artifact.get("artifact_id") or matched_artifact.get("id")),
+            title=_figure_title(path, caption),
+            takeaway=shorten(matched_artifact.get("takeaway") or caption, 150),
+            finding=shorten(matched_artifact.get("finding") or caption, 180),
+            image_path=str(path),
+        )
+        if _append_analysis_visual(visual, visuals, seen, seen_visual_signatures, key=str(path)):
+            continue
     non_tree_sources = sorted(non_tree_sources, key=_visual_relevance_score, reverse=True)
     ordered_structured_sources: list[Any] = []
     if has_decision_tree:
@@ -1406,6 +1559,8 @@ def _analysis_artifact_queue(workflow_state: dict[str, Any]) -> list[VisualSpec]
     else:
         ordered_structured_sources = non_tree_sources
     for spec in ordered_structured_sources:
+        if len(visuals) >= 4:
+            break
         if (
             isinstance(spec, dict)
             and compact_whitespace(spec.get("chart_type")).lower() == "decision_tree"
@@ -1414,25 +1569,22 @@ def _analysis_artifact_queue(workflow_state: dict[str, Any]) -> list[VisualSpec]
             visual = VisualSpec.from_any({"type": "structured_chart", **spec})
         elif isinstance(spec, dict) and compact_whitespace(spec.get("chart_type")).lower() == "decision_tree" and _artifact_image_path(spec):
             visual = VisualSpec.from_any({"type": "code_figure", **spec})
+        elif isinstance(spec, dict) and _artifact_image_path(spec):
+            image_path = _artifact_image_path(spec)
+            visual = VisualSpec.from_any({"type": "code_figure", **spec, "image_path": image_path})
         else:
             visual = VisualSpec.from_any({"type": "structured_chart", **spec}) if isinstance(spec, dict) else None
         if visual:
             key = visual.artifact_id or visual.chart_spec_id or visual.title or str(len(visuals))
-            if key not in seen:
-                signature = _visual_semantic_signature(visual)
-                if signature and signature in seen_visual_signatures:
-                    continue
-                seen.add(key)
-                if visual.type == "code_figure" and visual.image_path and Path(visual.image_path).exists():
-                    pass
-                elif not has_structured_chart_data(visual):
-                    invalid_structured_visuals.append(key)
-                    continue
-                if visual.recommended_template not in TEMPLATE_REGISTRY:
-                    visual.recommended_template = _template_for_chart_type(visual.chart_type)
-                if signature:
-                    seen_visual_signatures.add(signature)
-                visuals.append(visual)
+            if visual.type == "code_figure" and visual.image_path and Path(visual.image_path).exists():
+                _append_analysis_visual(visual, visuals, seen, seen_visual_signatures, key=key)
+                continue
+            if not has_structured_chart_data(visual):
+                invalid_structured_visuals.append(key)
+                continue
+            if visual.recommended_template not in TEMPLATE_REGISTRY:
+                visual.recommended_template = _template_for_chart_type(visual.chart_type)
+            _append_analysis_visual(visual, visuals, seen, seen_visual_signatures, key=key)
     if invalid_structured_visuals:
         workflow_state.setdefault("slide_validation_warnings", []).append(
             {
@@ -1454,6 +1606,51 @@ def _analysis_artifact_queue(workflow_state: dict[str, Any]) -> list[VisualSpec]
         return visuals
 
     return visuals
+
+
+def _match_figure_artifact(caption: str, artifacts: list[Any]) -> dict[str, Any]:
+    caption_tokens = _meaningful_tokens(caption)
+    best: dict[str, Any] = {}
+    best_score = 0.0
+    for item in artifacts:
+        if not isinstance(item, dict) or compact_whitespace(item.get("chart_type")).lower() == "decision_tree":
+            continue
+        candidate = " ".join(
+            compact_whitespace(item.get(key)) for key in ("title", "finding", "takeaway") if compact_whitespace(item.get(key))
+        )
+        candidate_tokens = _meaningful_tokens(candidate)
+        if not caption_tokens or not candidate_tokens:
+            continue
+        score = len(caption_tokens & candidate_tokens) / max(1, min(len(caption_tokens), len(candidate_tokens)))
+        if score > best_score:
+            best, best_score = item, score
+    return best if best_score >= 0.22 else {}
+
+
+def _append_analysis_visual(
+    visual: VisualSpec,
+    visuals: list[VisualSpec],
+    seen: set[str],
+    seen_visual_signatures: set[str],
+    *,
+    key: str = "",
+) -> bool:
+    dedupe_key = compact_whitespace(key) or visual.artifact_id or visual.chart_spec_id or visual.image_path or visual.title or str(len(visuals))
+    if dedupe_key in seen:
+        return False
+    image_key = compact_whitespace(visual.image_path)
+    if image_key and image_key in seen:
+        return False
+    signature = _visual_semantic_signature(visual)
+    if signature and signature in seen_visual_signatures:
+        return False
+    seen.add(dedupe_key)
+    if image_key:
+        seen.add(image_key)
+    if signature:
+        seen_visual_signatures.add(signature)
+    visuals.append(visual)
+    return True
 
 
 def _visual_semantic_signature(visual: VisualSpec) -> str:

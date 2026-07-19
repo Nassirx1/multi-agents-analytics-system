@@ -1,0 +1,59 @@
+{
+  "summary": {
+    "evaluation_period": {
+      "start_time": "2026-07-13T10:00:00Z",
+      "end_time": "2026-07-13T10:00:12Z",
+      "total_duration_hours": 0.0033333333333333335
+    },
+    "overall_health": "excellent",
+    "key_findings": [],
+    "critical_issues": 0,
+    "improvement_opportunities": 0
+  },
+  "system_metrics": {
+    "total_tasks": 5,
+    "successful_tasks": 5,
+    "failed_tasks": 0,
+    "partial_tasks": 0,
+    "timeout_tasks": 0,
+    "success_rate": 1.0,
+    "failure_rate": 0.0,
+    "average_duration_ms": 2400,
+    "median_duration_ms": 2000,
+    "percentile_95_duration_ms": 3000.0,
+    "min_duration_ms": 2000,
+    "max_duration_ms": 3000,
+    "total_tokens_used": 800,
+    "average_tokens_per_task": 160.0,
+    "total_cost_usd": 0.004,
+    "average_cost_per_task": 0.0008,
+    "cost_per_token": 5e-06,
+    "throughput_tasks_per_hour": 1500.0,
+    "error_rate": 0.0,
+    "retry_rate": 0.0
+  },
+  "sla_compliance": {
+    "overall_compliant": true,
+    "sla_details": {
+      "success_rate": {
+        "target": 0.95,
+        "actual": 1.0,
+        "compliant": true,
+        "gap": 0
+      },
+      "average_latency": {
+        "target": 10000,
+        "actual": 2400,
+        "compliant": true,
+        "gap": 0
+      },
+      "error_rate": {
+        "target": 0.05,
+        "actual": 0.0,
+        "compliant": true,
+        "gap": 0
+      }
+    },
+    "compliance_score": 1.0
+  }
+}

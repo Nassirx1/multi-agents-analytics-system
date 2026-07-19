@@ -18,6 +18,7 @@ Treat the user's dataset/business description as an explicit analysis parameter.
 - If the description mentions a target, segment, time horizon, market, product, customer group, risk, or decision, test whether the dataset supports that angle.
 - If the data does not support part of the description, say so in `analysis_summary` and avoid unsupported claims.
 - Include a `user_goal_alignment` entry in `analysis_summary` explaining how the analysis answers the user's description.
+- Treat the current dataset, objective, target, and observed columns as the only valid context. Do not reuse prior-run domain language, recommendations, titles, or chart specs.
 
 ## Start With Column Roles
 Classify each column before choosing methods.
@@ -76,8 +77,9 @@ Pick the family that the dataset can genuinely support. Use more than one only w
 
 ## Visual Rules
 - Create visuals that answer a question. Do not make random charts just to fill space.
-- Prefer 3 to 5 strong figures over many weak ones.
+- Prefer strong, decision-relevant figures over weak filler figures.
 - Each figure needs a narrative title, axis labels, and a caption that states the takeaway.
+- Figure and artifact titles must be tied to the plotted field, metric, segment, or target. A title that could describe any dataset is not specific enough.
 - Prefer focused EDA visuals that answer one question at a time, such as target rate by one category or one numeric distribution. Do not mix unrelated categorical dimensions in one chart unless the artifact is explicitly labeled as a cross-field scan.
 - Figure captions must mention only fields that are visible in the chart.
 - Style saved figures for slide reading with light neutral backgrounds, high-contrast labels, and a compact muted colorblind-aware palette using valid matplotlib colors such as `#1f4e79`, `#2a9d8f`, `#e9c46a`, `#4f772d`, and `firebrick`. Avoid invalid color names with spaces, neon colors, rainbow palettes, and red/green-only comparisons.
@@ -88,11 +90,14 @@ Pick the family that the dataset can genuinely support. Use more than one only w
 - Avoid pie charts unless there are very few categories and share-of-total is the real point.
 - When possible, also produce `chart_specs` so the slide generator has structured fallback visuals if code-saved figures are unavailable.
 - Prefer `analysis_artifacts` for all slide-worthy visuals. Produce at least four structured slide candidates so slides 4-7 can each rebuild an analysis chart. These artifacts must describe the chart as structured data plus meaning, not just an image path.
+- Complete the core artifact contract before optional work so the script stays inside the watchdog: save 3 to 4 strong figures, fill summaries/captions/artifacts, then stop unless a clearly stronger chart is needed.
+- Do not emit multiple standalone target-baseline visuals. Use the target distribution once as context or a model caveat, then prioritize segment rates, drivers, trends, or other decision evidence.
 - Keep `chart_specs` small and aggregated: use short row dictionaries for the plotted values, never full raw dataframes.
 - Supported `chart_type` values include `bar`, `column`, `grouped_bar`, `horizontal_bar`, `ranking`, `line`, `scatter`, `small_multiples_bar`, `distribution`, `metric_cards`, `comparison`, and `decision_tree`.
 - Include `id`, `chart_type`, `title`, `takeaway`, optional `x`, optional `y`, optional `group_by`, optional `value_format`, optional `series`, and `data`.
 - Prefer simple aggregated chart rows such as `{"category": "...", "value": 12.3}`, `{"label": "...", "value": 12.3}`, explicit `x/y` rows, or grouped rows with `group_by`; never provide only prose for slide-worthy visuals.
 - For `analysis_artifacts`, include `artifact_id`, `artifact_type: chart_spec`, `slide_candidate: true`, `finding`, `chart_type`, `title`, `x_label`, `y_label`, `series` or `data`, `takeaway`, and `recommended_template`.
+- Each slide-worthy artifact must contribute a distinct decision point. Avoid duplicate `image_path`, `fallback_path`, target-distribution, or baseline-takeaway artifacts unless the duplicate explicitly compares model performance to baseline.
 - For small multiples, provide separate named series with readable data points so the slide renderer can rebuild mini charts instead of pasting a 2x2 subplot image.
 
 ## Analysis Rules
@@ -104,7 +109,7 @@ Pick the family that the dataset can genuinely support. Use more than one only w
 - Keep category ordering deterministic; never rely on accidental sort order.
 - Do not run clustering, correlation, association, causal, or predictive analysis just because it is possible. Choose it because the data shape and question support it.
 - Do not train a decision tree unless the user/workflow provided a target column. If the target is blank or absent, skip the model and record the skipped reason in `analysis_summary`.
-- For classification trees, report training accuracy, test accuracy, and baseline accuracy. For regression trees, report training R2, test R2, train/test MAE, and note that R2 is the regression score rather than classification accuracy.
+- For classification trees, report training accuracy, test accuracy, and baseline accuracy. When the minority-to-majority ratio is below 0.20, also report balanced accuracy, positive-class precision, recall, F1, confusion matrix, positive test support, and whether cross-validation was completed. Accuracy alone is not sufficient for an imbalanced target. For regression trees, report training R2, test R2, train/test MAE, and note that R2 is the regression score rather than classification accuracy.
 - If classification test accuracy is lower than baseline accuracy, describe the tree as an explanatory rule model only. Do not call it high accuracy, predictive lift, or production-ready.
 - Export compact tree rules in `analysis_summary`, `business_findings`, and one structured `analysis_artifacts` item with `chart_type: decision_tree`, `artifact_id: decision_tree_rules`, `slide_candidate: true`, train/test metric fields, `fallback_path: decision_tree_rules.png`, and `data.nodes` plus `data.edges`.
 - `build_sklearn_tree_artifact` and `render_decision_tree_rules_figure` are already available in the generated-code runtime. Call them directly; do not import fake helper modules such as `sklearn_utils` or `analytics_helpers`.
@@ -114,6 +119,7 @@ Pick the family that the dataset can genuinely support. Use more than one only w
 - Do not inspect sklearn tree internals yourself. Never read `DecisionTreeClassifier.tree_`, `DecisionTreeRegressor.tree_`, aliases such as `DTC.tree_`, `.feature`, `.threshold`, `.value`, or `.values` from sklearn classes/properties. Train a model instance or Pipeline, then pass that fitted object to `build_sklearn_tree_artifact(...)`; if using a Pipeline, `feature_names=None` is acceptable because the helper can infer transformed feature names.
 - Save the decision tree diagram as `decision_tree_rules.png` after EDA figures, using `render_decision_tree_rules_figure(decision_tree_artifact, 'decision_tree_rules.png')`. The saved PNG must show split nodes and leaf prediction/rule nodes as rectangles connected by lines so PDF and slides reuse the code-generated visual.
 - Leaf nodes must include the predicted class/value and the readable path/rule that reaches that leaf.
+- Keep decision-tree artifacts presentation-ready: shallow tree, short feature labels, concise leaf labels, and a one-sentence performance note comparing test score to baseline.
 - When the dataset has no clear target or time column, focus on high-quality EDA, segmentation, association, and risk/opportunity patterns.
 - When using correlation or clustering, preprocess features explicitly and summarize the features used.
 - Keep every metric reproducible: define numerator, denominator, grouping, and filtering logic in code comments or summary keys.
@@ -130,7 +136,7 @@ Generated code should follow this order:
 3. Cleaning and type conversion.
 4. Missingness, duplicates, and outlier profiling.
 5. Select analysis family from available fields and business goal.
-6. Run 3 to 5 focused analyses with charts.
+6. Run focused analyses with charts that match the dataset and user objective.
 7. If a valid decision tree target was provided, train one classifier or regressor and prepare verified train/test metric and rule outputs from the fitted model.
 8. Save figures and populate `figure_captions`.
 9. Populate at least four `analysis_artifacts` for slide-worthy visuals using aggregated values and clear findings, including the `decision_tree` rules artifact when modeling ran.
@@ -164,3 +170,4 @@ Reject or revise analysis that:
 - uses weak or decorative visuals
 - gives vague wording without numbers
 - produces activity without insight
+- contains stale dataset/domain terms, targets, recommendations, or visual titles from a prior run
